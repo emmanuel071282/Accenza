@@ -1,0 +1,151 @@
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: 'DM Sans', sans-serif;
+    --font-display: 'Cormorant Garamond', Georgia, serif;
+
+    /* Accenza — warm ivory & gold palette */
+    --background: 36 30% 97%;
+    --foreground: 24 15% 10%;
+
+    --card: 36 30% 97%;
+    --card-foreground: 24 15% 10%;
+
+    --popover: 36 30% 97%;
+    --popover-foreground: 24 15% 10%;
+
+    --primary: 38 65% 35%;          /* deep gold */
+    --primary-foreground: 36 30% 97%;
+
+    --secondary: 36 20% 92%;
+    --secondary-foreground: 24 15% 15%;
+
+    --muted: 36 20% 92%;
+    --muted-foreground: 24 10% 45%;
+
+    --accent: 350 35% 55%;          /* rose accent */
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 36 20% 85%;
+    --input: 36 20% 85%;
+    --ring: 38 65% 35%;
+
+    --radius: 0rem;
+
+    /* Chart colors */
+    --chart-1: 38 65% 35%;
+    --chart-2: 350 35% 55%;
+    --chart-3: 25 80% 50%;
+    --chart-4: 200 60% 45%;
+    --chart-5: 280 40% 50%;
+
+    /* Sidebar */
+    --sidebar: 36 25% 94%;
+    --sidebar-foreground: 24 15% 10%;
+    --sidebar-border: 36 20% 85%;
+    --sidebar-ring: 38 65% 35%;
+    --sidebar-primary: 38 65% 35%;
+    --sidebar-primary-foreground: 36 30% 97%;
+    --sidebar-accent: 36 20% 88%;
+    --sidebar-accent-foreground: 24 15% 10%;
+    --sidebar-primary-border: hsl(38 65% 30%);
+    --sidebar-accent-border: hsl(36 20% 80%);
+    --primary-border: hsl(38 65% 28%);
+    --secondary-border: hsl(36 20% 80%);
+    --muted-border: hsl(36 20% 80%);
+    --accent-border: hsl(350 35% 48%);
+    --destructive-border: hsl(0 84% 50%);
+    --card-border: hsl(36 20% 85%);
+    --popover-border: hsl(36 20% 85%);
+  }
+
+  .dark {
+    --background: 24 15% 8%;
+    --foreground: 36 30% 95%;
+
+    --card: 24 15% 10%;
+    --card-foreground: 36 30% 95%;
+
+    --popover: 24 15% 10%;
+    --popover-foreground: 36 30% 95%;
+
+    --primary: 38 60% 55%;
+    --primary-foreground: 24 15% 8%;
+
+    --secondary: 24 12% 18%;
+    --secondary-foreground: 36 30% 92%;
+
+    --muted: 24 12% 18%;
+    --muted-foreground: 36 15% 60%;
+
+    --accent: 350 35% 65%;
+    --accent-foreground: 24 15% 8%;
+
+    --destructive: 0 62.8% 40%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 24 12% 22%;
+    --input: 24 12% 22%;
+    --ring: 38 60% 55%;
+
+    --sidebar: 24 15% 10%;
+    --sidebar-foreground: 36 30% 92%;
+    --sidebar-border: 24 12% 22%;
+    --sidebar-ring: 38 60% 55%;
+    --sidebar-primary: 38 60% 55%;
+    --sidebar-primary-foreground: 24 15% 8%;
+    --sidebar-accent: 24 12% 20%;
+    --sidebar-accent-foreground: 36 30% 92%;
+    --sidebar-primary-border: hsl(38 60% 48%);
+    --sidebar-accent-border: hsl(24 12% 28%);
+    --primary-border: hsl(38 60% 45%);
+    --secondary-border: hsl(24 12% 28%);
+    --muted-border: hsl(24 12% 28%);
+    --accent-border: hsl(350 35% 58%);
+    --destructive-border: hsl(0 62% 35%);
+    --card-border: hsl(24 12% 22%);
+    --popover-border: hsl(24 12% 22%);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply tracking-wide;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .img-hover-zoom {
+    @apply transition-transform duration-700 ease-out;
+  }
+  .group:hover .img-hover-zoom {
+    @apply scale-105;
+  }
+
+  .font-display {
+    font-family: var(--font-display);
+  }
+}
