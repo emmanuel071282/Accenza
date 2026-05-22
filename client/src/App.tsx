@@ -8,6 +8,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 import { CartDrawer } from "@/components/cart/CartDrawer";
+import { PromoStrip } from "@/components/promo/PromoStrip";
+import { ChatWidget } from "@/components/ChatWidget";
 import NotFound from "@/pages/not-found";
 
 // Storefront pages — lazy loaded
@@ -22,6 +24,7 @@ const RegisterPage = lazy(() => import("@/pages/RegisterPage"));
 const AccountPage = lazy(() => import("@/pages/AccountPage"));
 const MyOrdersPage = lazy(() => import("@/pages/MyOrdersPage"));
 const OrderDetailPage = lazy(() => import("@/pages/OrderDetailPage"));
+const CampaignPage = lazy(() => import("@/pages/SummerPage"));
 
 // Admin pages — lazy loaded
 const DashboardPage = lazy(() => import("@/pages/admin/DashboardPage"));
@@ -38,6 +41,7 @@ const PageFallback = () => <div className="min-h-screen bg-background" />;
 function StorefrontRouter() {
   return (
     <div className="flex flex-col min-h-screen">
+      <PromoStrip />
       <Navbar />
       <main className="flex-grow">
         <Suspense fallback={<PageFallback />}>
@@ -53,12 +57,14 @@ function StorefrontRouter() {
             <Route path="/account" component={AccountPage} />
             <Route path="/orders" component={MyOrdersPage} />
             <Route path="/orders/:id" component={OrderDetailPage} />
+            <Route path="/campaign" component={CampaignPage} />
             <Route component={NotFound} />
           </Switch>
         </Suspense>
       </main>
       <Footer />
       <CartDrawer />
+      <ChatWidget />
     </div>
   );
 }

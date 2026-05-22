@@ -32,7 +32,7 @@ export default function ProductPage() {
   const [selectedSize, setSelectedSize] = useState<string>("");
 
   usePageMeta({
-    title: product ? `${product.name} — BESTA` : "BESTA - Fashion Shopping",
+    title: product ? `${product.name} — ACCENZA` : "ACCENZA - Jewellery, Cosmetics & Accessories",
     description: product?.description ?? undefined,
     ogImage: product?.imageUrl ?? undefined,
   });

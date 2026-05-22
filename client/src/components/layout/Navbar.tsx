@@ -314,7 +314,7 @@ export function Navbar() {
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 bg-background md:hidden flex flex-col">
           <div className="flex items-center justify-between p-4 border-b border-border">
-            <span className="font-display text-xl font-bold tracking-tighter">BESTA</span>
+            <span className="font-display text-xl font-bold tracking-tighter">ACCENZA</span>
             <button onClick={() => setMobileMenuOpen(false)} aria-label="Close navigation menu" className="p-2" data-testid="button-close-mobile-menu">
               <X className="w-6 h-6" />
             </button>

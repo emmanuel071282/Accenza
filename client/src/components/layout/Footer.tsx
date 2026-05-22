@@ -30,7 +30,14 @@ export function Footer() {
               <li><Link href="/orders" className="hover:text-white transition-colors">My Orders</Link></li>
               <li><Link href="/exchange-policy" className="hover:text-white transition-colors">Returns & Exchange</Link></li>
               <li><a href="#" className="hover:text-white transition-colors">Shipping Info</a></li>
-              <li><a href="#" className="hover:text-white transition-colors">Contact Us</a></li>
+              <li>
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent("open-accenza-chat"))}
+                  className="hover:text-white transition-colors text-left"
+                >
+                  Contact Us
+                </button>
+              </li>
             </ul>
           </div>
 

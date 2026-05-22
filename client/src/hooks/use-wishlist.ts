@@ -40,7 +40,7 @@ export const useWishlist = create<WishlistStore>()(
       },
     }),
     {
-      name: "besta-wishlist-storage",
+      name: "accenza-wishlist-storage",
     }
   )
 );
