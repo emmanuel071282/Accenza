@@ -1,7 +1,7 @@
 import crypto from "crypto";
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID || "";
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || "";
+const RAZORPAY_KEY_ID = process.env.ACCENZA_RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID || "";
+const RAZORPAY_KEY_SECRET = process.env.ACCENZA_RAZORPAY_KEY_SECRET || process.env.RAZORPAY_KEY_SECRET || "";
 const RAZORPAY_API = "https://api.razorpay.com/v1";
 
 function authHeader() {

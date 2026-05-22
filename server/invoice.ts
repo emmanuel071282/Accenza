@@ -6,7 +6,7 @@ const ACCENZA_STATE = "Gujarat";
 const ACCENZA_STATE_CODE = "24";
 const ACCENZA_ADDRESS = "Accenza, Gujarat, India";
 const ACCENZA_EMAIL = "care@accenza.in";
-const ACCENZA_PHONE = "+91-9000000000";
+const ACCENZA_PHONE = process.env.ACCENZA_PHONE || "+91-9377637787";
 
 export interface GSTBreakdown {
   taxableAmount: number;
@@ -62,7 +62,7 @@ export function generateInvoiceNumber(): string {
   const year = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
   const fy = `${String(year).slice(2)}-${String(year + 1).slice(2)}`;
   const seq = String(invoiceCounter++).padStart(5, "0");
-  return `ACCENZA/MH/${fy}/${seq}`;
+  return `ACCENZA/GJ/${fy}/${seq}`;
 }
 
 export interface InvoiceLineItem {
