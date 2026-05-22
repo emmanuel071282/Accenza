@@ -1684,27 +1684,37 @@ async function seedSummerCampaign() {
 }
 
 async function seedAdminUser() {
-  const adminMobile = process.env.ADMIN_MOBILE;
   const adminPin = process.env.ADMIN_PIN;
 
-  if (!adminMobile || !adminPin) {
-    console.warn("⚠️  ADMIN_MOBILE / ADMIN_PIN env vars not set — skipping admin seed. Set them in your .env to create the admin account.");
+  // Fixed admin mobiles + optional extra from env
+  const adminMobiles = [
+    { mobile: "9377637787", name: "Admin" },
+    { mobile: "7778988998", name: "Admin 2" },
+    ...(process.env.ADMIN_MOBILE && !["9377637787", "7778988998"].includes(process.env.ADMIN_MOBILE)
+      ? [{ mobile: process.env.ADMIN_MOBILE, name: "Admin" }]
+      : []),
+  ];
+
+  if (!adminPin) {
+    console.warn("⚠️  ADMIN_PIN env var not set — skipping admin seed.");
     return;
   }
 
-  const existing = await storage.getUserByMobile(adminMobile);
-  if (existing) return;
-
   const hashedPin = await bcrypt.hash(adminPin, 10);
-  await storage.createUser({
-    name: "Admin",
-    mobile: adminMobile,
-    email: process.env.ADMIN_EMAIL || "admin@accenza.in",
-    pin: hashedPin,
-    birthday: "1990-01-01",
-    role: "admin",
-  });
-  console.log(`Admin user seeded (mobile: ${adminMobile})`);
+
+  for (const { mobile, name } of adminMobiles) {
+    const existing = await storage.getUserByMobile(mobile);
+    if (existing) continue;
+    await storage.createUser({
+      name,
+      mobile,
+      email: process.env.ADMIN_EMAIL || "admin@accenza.in",
+      pin: hashedPin,
+      birthday: "1990-01-01",
+      role: "admin",
+    });
+    console.log(`Admin user seeded (mobile: ${mobile})`);
+  }
 }
 
 async function seedStoresAndInventory() {
