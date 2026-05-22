@@ -7,6 +7,9 @@ import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, otpVer
 import bcrypt from "bcryptjs";
 import { sendSms, sendWhatsApp } from "./sms";
 import { processStylistMessage, getDemoResponse, isAIStylistConfigured } from "./ai-stylist";
+import { generateProductImages, isAIImagesConfigured } from "./ai-images";
+import { createWriteStream, mkdirSync, existsSync } from "fs";
+import { join } from "path";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
 import { createRazorpayOrder, verifyPaymentSignature, getRazorpayKeyId, isRazorpayConfigured } from "./payment";
@@ -431,6 +434,61 @@ export async function registerRoutes(
       }
       console.error("Failed to create product:", error);
       res.status(500).json({ message: "Failed to create product" });
+    }
+  });
+
+  // AI image generation for product photos
+  app.post("/api/admin/ai-images/generate", requireAdmin, async (req, res) => {
+    try {
+      const { imageBase64, mimeType, category, subcategory, productName } = req.body;
+      if (!imageBase64 || !category || !subcategory) {
+        return res.status(400).json({ message: "imageBase64, category, and subcategory are required" });
+      }
+      if (!isAIImagesConfigured()) {
+        return res.status(503).json({ message: "AI image generation is not configured. Set OPENAI_API_KEY." });
+      }
+
+      const { productShot, modelShot } = await generateProductImages(
+        imageBase64, mimeType || "image/jpeg", category, subcategory, productName || "product"
+      );
+
+      res.json({
+        productShot: productShot ? `data:image/png;base64,${productShot}` : null,
+        modelShot: modelShot ? `data:image/png;base64,${modelShot}` : null,
+      });
+    } catch (error) {
+      console.error("AI image generation error:", error);
+      res.status(500).json({ message: "Failed to generate images. Please try again." });
+    }
+  });
+
+  // Save a base64 AI-generated image to disk, return a permanent URL
+  app.post("/api/admin/ai-images/save", requireAdmin, async (req, res) => {
+    try {
+      const { imageBase64 } = req.body;
+      if (!imageBase64) return res.status(400).json({ message: "imageBase64 required" });
+
+      const base64Data = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
+      const buffer = Buffer.from(base64Data, "base64");
+
+      const dir = join(process.cwd(), "client", "public", "products");
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+      const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const filepath = join(dir, filename);
+
+      await new Promise<void>((resolve, reject) => {
+        const stream = createWriteStream(filepath);
+        stream.write(buffer);
+        stream.end();
+        stream.on("finish", resolve);
+        stream.on("error", reject);
+      });
+
+      res.json({ url: `/products/${filename}` });
+    } catch (error) {
+      console.error("AI image save error:", error);
+      res.status(500).json({ message: "Failed to save image." });
     }
   });
 

@@ -2,12 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import AdminLayout from "./AdminLayout";
-import { Loader2, Plus, X, Printer, Barcode } from "lucide-react";
+import { Loader2, Plus, X, Printer, Barcode, Camera, Wand2, Check, ImageIcon } from "lucide-react";
 import type { Product } from "@shared/schema";
 import { SUBCATEGORIES, getAllSubcategories, getSizesForProduct } from "@shared/schema";
 import JsBarcode from "jsbarcode";
 
-const CATEGORIES = ["Mens", "Ladies", "Kids", "Accessories", "Footwear", "Cosmetics"];
+const CATEGORIES = ["Jewellery", "Cosmetics", "Handbags", "Accessories"];
 
 function BarcodeModal({ product, onClose }: { product: Product; onClose: () => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -100,6 +100,16 @@ export default function ArticlesPage() {
   });
   const [autoSizes, setAutoSizes] = useState<string[]>([]);
 
+  // AI image generation state
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiResults, setAiResults] = useState<{ productShot: string | null; modelShot: string | null } | null>(null);
+  const [selectedAiImage, setSelectedAiImage] = useState<"product" | "model" | null>(null);
+  const [useUrlMode, setUseUrlMode] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ["/api/admin/products"],
   });
@@ -114,10 +124,20 @@ export default function ArticlesPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       setBarcodeProduct(newProduct);
       setShowAddForm(false);
-      setForm({ name: "", description: "", price: "", costPrice: "", imageUrl: "", category: "", subcategory: "" });
-      setAutoSizes([]);
+      resetForm();
     },
   });
+
+  const resetForm = () => {
+    setForm({ name: "", description: "", price: "", costPrice: "", imageUrl: "", category: "", subcategory: "" });
+    setAutoSizes([]);
+    setUploadedFile(null);
+    setUploadedPreview(null);
+    setAiResults(null);
+    setSelectedAiImage(null);
+    setUseUrlMode(false);
+    setAiError(null);
+  };
 
   const handleCategoryChange = (category: string) => {
     setForm((prev) => ({ ...prev, category, subcategory: "" }));
@@ -134,9 +154,67 @@ export default function ArticlesPage() {
     ? getAllSubcategories(SUBCATEGORIES[form.category])
     : [];
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedFile(file);
+    setAiResults(null);
+    setSelectedAiImage(null);
+    setAiError(null);
+    const reader = new FileReader();
+    reader.onload = (ev) => setUploadedPreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const handleAIGenerate = async () => {
+    if (!uploadedFile || !uploadedPreview || !form.category || !form.subcategory) return;
+    setAiGenerating(true);
+    setAiResults(null);
+    setAiError(null);
+    try {
+      const res = await apiRequest("POST", "/api/admin/ai-images/generate", {
+        imageBase64: uploadedPreview,
+        mimeType: uploadedFile.type,
+        category: form.category,
+        subcategory: form.subcategory,
+        productName: form.name || form.subcategory,
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setAiError((errData as any).message || "AI generation failed. Please try again.");
+        return;
+      }
+      const data = await res.json();
+      setAiResults(data);
+    } catch (err) {
+      setAiError("Failed to connect to AI service. Please try again.");
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  const handleSelectAiImage = (type: "product" | "model") => {
+    setSelectedAiImage(type);
+    const url = type === "product" ? aiResults?.productShot : aiResults?.modelShot;
+    if (url) setForm((f) => ({ ...f, imageUrl: url }));
+  };
+
+  const canGenerate = !!uploadedFile && !!form.category && !!form.subcategory;
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    createMutation.mutate({ ...form, sizes: autoSizes });
+    let imageUrl = form.imageUrl;
+    // If it's a base64 image, save it to disk first
+    if (imageUrl.startsWith("data:")) {
+      try {
+        const saveRes = await apiRequest("POST", "/api/admin/ai-images/save", { imageBase64: imageUrl });
+        const saved = await saveRes.json();
+        imageUrl = saved.url;
+      } catch (err) {
+        console.error("Failed to save AI image:", err);
+      }
+    }
+    createMutation.mutate({ ...form, imageUrl, sizes: autoSizes });
   };
 
   return (
@@ -164,7 +242,7 @@ export default function ArticlesPage() {
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
                 className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
-                placeholder="e.g. Cotton Linen Shirt"
+                placeholder="e.g. Gold Jhumka Earrings"
                 required
               />
             </div>
@@ -200,18 +278,6 @@ export default function ArticlesPage() {
                 onChange={(e) => setForm({ ...form, costPrice: e.target.value.replace(/[^0-9.]/g, "") })}
                 className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
                 placeholder="500"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] uppercase tracking-widest font-semibold mb-2">Image URL</label>
-              <input
-                type="url"
-                value={form.imageUrl}
-                onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
-                className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
-                placeholder="https://images.unsplash.com/..."
                 required
               />
             </div>
@@ -261,6 +327,196 @@ export default function ArticlesPage() {
             </div>
           )}
 
+          {/* ── Product Image Section ── */}
+          <div className="border border-border p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <label className="block text-[10px] uppercase tracking-widest font-semibold">Product Image</label>
+              <button
+                type="button"
+                onClick={() => setUseUrlMode((v) => !v)}
+                className="text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground underline underline-offset-2"
+              >
+                {useUrlMode ? "Use Camera / Upload" : "Or enter URL manually"}
+              </button>
+            </div>
+
+            {useUrlMode ? (
+              /* URL input mode */
+              <div>
+                <input
+                  type="url"
+                  value={form.imageUrl}
+                  onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
+                  className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
+                  placeholder="https://images.unsplash.com/..."
+                  required
+                />
+              </div>
+            ) : (
+              /* Camera / AI mode */
+              <div className="space-y-4">
+                {/* Upload button */}
+                <div className="flex items-center gap-3">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleFileChange}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-2 border border-border px-4 py-2 text-xs uppercase tracking-widest font-semibold hover:bg-secondary transition-colors"
+                  >
+                    <Camera className="w-4 h-4" />
+                    {uploadedFile ? "Change Photo" : "Upload Photo"}
+                  </button>
+                  {uploadedFile && (
+                    <span className="text-xs text-muted-foreground truncate max-w-[200px]">{uploadedFile.name}</span>
+                  )}
+                </div>
+
+                {/* Thumbnail preview */}
+                {uploadedPreview && (
+                  <div className="flex items-start gap-3">
+                    <div className="w-20 h-20 border border-border overflow-hidden flex-shrink-0">
+                      <img src={uploadedPreview} alt="Uploaded" className="w-full h-full object-cover" />
+                    </div>
+                    <div className="flex-1 text-xs text-muted-foreground pt-1">
+                      Photo uploaded. Select category &amp; subcategory, then generate.
+                    </div>
+                  </div>
+                )}
+
+                {/* Generate with AI button */}
+                <div className="relative inline-block">
+                  <button
+                    type="button"
+                    onClick={handleAIGenerate}
+                    disabled={!canGenerate || aiGenerating}
+                    title={!form.category || !form.subcategory ? "Select category and subcategory first" : !uploadedFile ? "Upload a photo first" : ""}
+                    className="flex items-center gap-2 bg-foreground text-background px-4 py-2.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    {aiGenerating ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-4 h-4" />
+                    )}
+                    {aiGenerating ? "Generating..." : "Generate with AI"}
+                  </button>
+                </div>
+
+                {/* Generating spinner */}
+                {aiGenerating && (
+                  <div className="flex items-center gap-3 py-2 text-sm text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                    <span>AI is creating your images — this takes about 20–30 seconds...</span>
+                  </div>
+                )}
+
+                {/* Error message */}
+                {aiError && (
+                  <p className="text-xs text-red-500 border border-red-200 bg-red-50 px-3 py-2">{aiError}</p>
+                )}
+
+                {/* AI result cards */}
+                {aiResults && (
+                  <div className="space-y-3">
+                    <p className="text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">
+                      Select an image to use
+                    </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Product Shot */}
+                      {aiResults.productShot ? (
+                        <button
+                          type="button"
+                          onClick={() => handleSelectAiImage("product")}
+                          className={`relative border-2 p-1 transition-all text-left ${
+                            selectedAiImage === "product"
+                              ? "border-yellow-500"
+                              : "border-border hover:border-foreground/40"
+                          }`}
+                        >
+                          <img
+                            src={aiResults.productShot}
+                            alt="Product Shot"
+                            className="w-full aspect-square object-cover"
+                          />
+                          <div className="mt-1.5 px-1 pb-1 flex items-center justify-between">
+                            <span className="text-[10px] uppercase tracking-widest font-semibold">Product Shot</span>
+                            {selectedAiImage === "product" && (
+                              <span className="flex items-center gap-1 text-[10px] text-yellow-600 font-semibold">
+                                <Check className="w-3 h-3" /> Selected
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="border border-dashed border-border p-4 flex flex-col items-center justify-center gap-2 aspect-square">
+                          <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Product Shot unavailable</span>
+                        </div>
+                      )}
+
+                      {/* Model Shot */}
+                      {aiResults.modelShot ? (
+                        <button
+                          type="button"
+                          onClick={() => handleSelectAiImage("model")}
+                          className={`relative border-2 p-1 transition-all text-left ${
+                            selectedAiImage === "model"
+                              ? "border-yellow-500"
+                              : "border-border hover:border-foreground/40"
+                          }`}
+                        >
+                          <img
+                            src={aiResults.modelShot}
+                            alt="Model Shot"
+                            className="w-full aspect-square object-cover"
+                          />
+                          <div className="mt-1.5 px-1 pb-1 flex items-center justify-between">
+                            <span className="text-[10px] uppercase tracking-widest font-semibold">Model Shot</span>
+                            {selectedAiImage === "model" && (
+                              <span className="flex items-center gap-1 text-[10px] text-yellow-600 font-semibold">
+                                <Check className="w-3 h-3" /> Selected
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="border border-dashed border-border p-4 flex flex-col items-center justify-center gap-2 aspect-square">
+                          <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Model Shot unavailable</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Selected image preview (if AI image chosen) */}
+                {form.imageUrl && form.imageUrl.startsWith("data:") && selectedAiImage && (
+                  <div className="flex items-center gap-2 text-xs text-green-600 border border-green-200 bg-green-50 px-3 py-2">
+                    <Check className="w-3.5 h-3.5 flex-shrink-0" />
+                    AI-generated {selectedAiImage === "product" ? "product" : "model"} shot selected. Will be saved on submit.
+                  </div>
+                )}
+
+                {/* Hidden required input to satisfy form validation when using AI image */}
+                <input
+                  type="text"
+                  value={form.imageUrl}
+                  onChange={() => {}}
+                  className="sr-only"
+                  required
+                  tabIndex={-1}
+                  aria-hidden="true"
+                />
+              </div>
+            )}
+          </div>
+
           <div className="flex items-center gap-2 pt-2">
             <button
               type="submit"
@@ -272,7 +528,7 @@ export default function ArticlesPage() {
             </button>
             <button
               type="button"
-              onClick={() => { setShowAddForm(false); setAutoSizes([]); }}
+              onClick={() => { setShowAddForm(false); resetForm(); }}
               className="border border-border px-6 py-2.5 text-xs uppercase tracking-widest font-semibold hover:bg-secondary"
             >
               Cancel
