@@ -3,10 +3,9 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, otpVerifications, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, type InsertCampaign } from "@shared/schema";
+import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, type InsertCampaign } from "@shared/schema";
 import bcrypt from "bcryptjs";
-import { sendSms, sendWhatsApp } from "./sms";
-import { processStylistMessage, getDemoResponse, isAIStylistConfigured } from "./ai-stylist";
+import { sendSms } from "./sms";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
 import { createRazorpayOrder, verifyPaymentSignature, getRazorpayKeyId, isRazorpayConfigured } from "./payment";
@@ -51,11 +50,6 @@ function createRateLimiter(maxRequests: number, windowMs: number) {
   };
 }
 
-// 5 OTP send requests per IP per 15 minutes
-const otpSendLimiter = createRateLimiter(5, 15 * 60 * 1000);
-// 10 OTP verify attempts per IP per 15 minutes
-const otpVerifyLimiter = createRateLimiter(10, 15 * 60 * 1000);
-
 // Clean up expired entries every 30 minutes to prevent memory leak
 setInterval(() => {
   const now = Date.now();
@@ -65,98 +59,11 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 // ---------------------------------------------------------------------------
 
-function generateOtp(): string {
-  return String(Math.floor(1000 + Math.random() * 9000));
-}
-
-async function saveOtp(mobile: string, otp: string, type: string) {
-  await db.delete(otpVerifications).where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
-  await db.insert(otpVerifications).values({
-    mobile,
-    otp,
-    type,
-    verified: false,
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-  });
-}
-
-async function getOtp(mobile: string, type: string) {
-  const rows = await db.select().from(otpVerifications)
-    .where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
-  return rows[0] ?? null;
-}
-
-async function markOtpVerified(mobile: string, type: string) {
-  await db.update(otpVerifications).set({ verified: true })
-    .where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
-}
-
-async function deleteOtp(mobile: string, type: string) {
-  await db.delete(otpVerifications).where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
-}
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-
-  app.post("/api/auth/send-registration-otp", otpSendLimiter, async (req, res) => {
-    try {
-      const schema = z.object({ mobile: z.string().regex(/^[6-9]\d{9}$/, "Invalid mobile number") });
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0].message });
-      }
-      const { mobile } = parsed.data;
-
-      const existing = await storage.getUserByMobile(mobile);
-      if (existing) {
-        return res.status(409).json({ message: "An account with this mobile number already exists" });
-      }
-
-      const otp = generateOtp();
-      await saveOtp(mobile, otp, "registration");
-
-      const { simulated } = await sendSms(mobile, `Your ACCENZA registration OTP is ${otp}. Valid for 5 minutes. Do not share this code.`);
-
-      res.json({ message: "OTP sent successfully", ...(simulated ? { otp, simulated: true } : {}) });
-    } catch (error) {
-      console.error("Send registration OTP error:", error);
-      res.status(500).json({ message: "Failed to send OTP. Please try again." });
-    }
-  });
-
-  app.post("/api/auth/verify-registration-otp", otpVerifyLimiter, async (req, res) => {
-    try {
-      const schema = z.object({
-        mobile: z.string().regex(/^[6-9]\d{9}$/),
-        otp: z.string().regex(/^\d{4}$/),
-      });
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0].message });
-      }
-      const { mobile, otp } = parsed.data;
-
-      const stored = await getOtp(mobile, "registration");
-      if (!stored) {
-        return res.status(400).json({ message: "OTP expired or not requested. Please request a new one." });
-      }
-      if (stored.expiresAt < new Date()) {
-        await deleteOtp(mobile, "registration");
-        return res.status(400).json({ message: "OTP has expired. Please request a new one." });
-      }
-      if (stored.otp !== otp) {
-        return res.status(401).json({ message: "Invalid OTP. Please try again." });
-      }
-
-      await markOtpVerified(mobile, "registration");
-      res.json({ message: "Mobile number verified successfully" });
-    } catch (error) {
-      console.error("Verify registration OTP error:", error);
-      res.status(500).json({ message: "Something went wrong. Please try again." });
-    }
-  });
 
   app.post("/api/auth/register", async (req, res) => {
     try {
@@ -165,16 +72,6 @@ export async function registerRoutes(
         return res.status(400).json({ message: parsed.error.errors[0].message });
       }
       const { name, mobile, email, pin, birthday } = parsed.data;
-
-      const storedOtp = await getOtp(mobile, "registration");
-      if (!storedOtp || !storedOtp.verified) {
-        return res.status(400).json({ message: "Mobile number not verified. Please verify with OTP first." });
-      }
-      if (storedOtp.expiresAt < new Date()) {
-        await deleteOtp(mobile, "registration");
-        return res.status(400).json({ message: "Verification expired. Please start the registration again." });
-      }
-      await deleteOtp(mobile, "registration");
 
       const existing = await storage.getUserByMobile(mobile);
       if (existing) {
@@ -218,70 +115,6 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/auth/send-otp", otpSendLimiter, async (req, res) => {
-    try {
-      const schema = z.object({ mobile: z.string().regex(/^[6-9]\d{9}$/, "Invalid mobile number") });
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0].message });
-      }
-      const { mobile } = parsed.data;
-
-      const user = await storage.getUserByMobile(mobile);
-      if (!user) {
-        return res.status(404).json({ message: "No account found with this mobile number" });
-      }
-
-      const otp = generateOtp();
-      await saveOtp(mobile, otp, "login");
-
-      const { simulated } = await sendSms(mobile, `Your ACCENZA login OTP is ${otp}. Valid for 5 minutes. Do not share this code.`);
-
-      res.json({ message: "OTP sent successfully", ...(simulated ? { otp, simulated: true } : {}) });
-    } catch (error) {
-      console.error("Send OTP error:", error);
-      res.status(500).json({ message: "Failed to send OTP. Please try again." });
-    }
-  });
-
-  app.post("/api/auth/verify-otp", otpVerifyLimiter, async (req, res) => {
-    try {
-      const schema = z.object({
-        mobile: z.string().regex(/^[6-9]\d{9}$/),
-        otp: z.string().regex(/^\d{4}$/),
-      });
-      const parsed = schema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0].message });
-      }
-      const { mobile, otp } = parsed.data;
-
-      const stored = await getOtp(mobile, "login");
-      if (!stored) {
-        return res.status(400).json({ message: "OTP expired or not requested. Please request a new one." });
-      }
-      if (stored.expiresAt < new Date()) {
-        await deleteOtp(mobile, "login");
-        return res.status(400).json({ message: "OTP has expired. Please request a new one." });
-      }
-      if (stored.otp !== otp) {
-        return res.status(401).json({ message: "Invalid OTP. Please try again." });
-      }
-
-      await deleteOtp(mobile, "login");
-
-      const user = await storage.getUserByMobile(mobile);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-
-      req.session.userId = user.id;
-      res.json({ id: user.id, name: user.name, mobile: user.mobile, email: user.email, birthday: user.birthday, role: user.role });
-    } catch (error) {
-      console.error("Verify OTP error:", error);
-      res.status(500).json({ message: "Something went wrong. Please try again." });
-    }
-  });
 
   app.get("/api/auth/me", async (req, res) => {
     if (!req.session.userId) {
@@ -1342,85 +1175,6 @@ export async function registerRoutes(
     res.send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>`);
   });
 
-  // ---------------------------------------------------------------------------
-  // WhatsApp AI Stylist Webhook
-  // Twilio sends incoming WhatsApp messages here
-  // ---------------------------------------------------------------------------
-  app.post("/api/webhooks/whatsapp", async (req, res) => {
-    // Always respond 200 to Twilio immediately
-    res.set("Content-Type", "text/xml");
-
-    try {
-      const { Body: messageBody, From: from, To: to } = req.body;
-
-      if (!messageBody || !from) {
-        return res.send("<Response></Response>");
-      }
-
-      // Extract 10-digit Indian mobile from "whatsapp:+91XXXXXXXXXX"
-      const mobile = from.replace("whatsapp:+91", "").replace("whatsapp:+", "");
-      const userMessage = messageBody.trim();
-
-      console.log(`[AI Stylist] Message from +91${mobile}: ${userMessage.substring(0, 100)}`);
-
-      // Save user message
-      await storage.addStylistMessage({
-        mobile,
-        role: "user",
-        message: userMessage,
-        productIds: null,
-      });
-
-      let reply: string;
-      let productIds: number[] = [];
-
-      if (isAIStylistConfigured()) {
-        // Get conversation history
-        const history = await storage.getStylistConversation(mobile);
-        // Get product catalog
-        const products = await storage.getProducts();
-
-        const result = await processStylistMessage(mobile, userMessage, history, products);
-        reply = result.reply;
-        productIds = result.productIds;
-      } else {
-        // Demo mode — no OpenAI key
-        reply = getDemoResponse(userMessage);
-      }
-
-      // Save assistant response
-      await storage.addStylistMessage({
-        mobile,
-        role: "assistant",
-        message: reply,
-        productIds: productIds.length > 0 ? productIds.join(",") : null,
-      });
-
-      // Send reply via WhatsApp
-      await sendWhatsApp(mobile, reply);
-
-      console.log(`[AI Stylist] Replied to +91${mobile} (${productIds.length} products recommended)`);
-
-      // Respond with empty TwiML (we send the reply via REST API instead)
-      res.send("<Response></Response>");
-    } catch (error) {
-      console.error("[AI Stylist] Webhook error:", error);
-      res.send("<Response></Response>");
-    }
-  });
-
-  // Admin endpoint — AI Stylist stats
-  app.get("/api/admin/stylist/stats", requireAdmin, async (_req, res) => {
-    const stats = await storage.getStylistStats();
-    res.json(stats);
-  });
-
-  // Admin endpoint — recent stylist conversations
-  app.get("/api/admin/stylist/conversations", requireAdmin, async (_req, res) => {
-    // Get unique mobiles with their latest message
-    const allMessages = await storage.getStylistConversation("", 200);
-    res.json(allMessages);
-  });
 
   await seedDatabase();
 
@@ -1431,213 +1185,103 @@ async function seedDatabase() {
   try {
     const existingProducts = await storage.getProducts();
     if (existingProducts.length > 0) {
-      const hasV3Subcats = existingProducts.some(p => p.subcategory === "Joggers" || p.subcategory === "Rompers") && !existingProducts.some(p => p.name === "Boys Sherwani Set");
-      const hasMuscleTees = existingProducts.some(p => p.subcategory === "Muscle Tees");
-      const hasIndianCordSets = existingProducts.some(p => p.subcategory === "Cord Sets" && p.category === "Ladies" && p.name.startsWith("Prisha"));
-      const hasGoldEarrings = existingProducts.some(p => p.name === "Hammered Gold Square Stud Earrings");
-      const hasCosmetics = existingProducts.some(p => p.category === "Cosmetics");
-      if (hasV3Subcats && hasMuscleTees && hasIndianCordSets && hasGoldEarrings && hasCosmetics) {
+      const hasJewellery = existingProducts.some(p => p.category === "Jewellery");
+      const hasHandbags = existingProducts.some(p => p.category === "Handbags");
+      if (hasJewellery && hasHandbags) {
         await seedStoresAndInventory();
         await seedAdminUser();
         await seedSummerCampaign();
         return;
       }
-
       await storage.deleteAllProducts();
     }
 
     const seedData = [
-      // ===== MENS - Casual Wear =====
-      { name: "Classic Crew Neck T-Shirt", description: "Soft cotton crew neck tee with a relaxed fit, perfect for everyday styling.", price: "799", imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "T-Shirts" },
-      { name: "Striped Polo T-Shirt", description: "Piqué cotton polo with contrast stripes and ribbed collar.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1625910513413-5fc421e0e6f5?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "T-Shirts" },
-      { name: "Premium Linen Shirt", description: "Breathable, high-quality linen shirt for a sophisticated summer look.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1594938298603-c8148c4dae35?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Shirts" },
-      { name: "Oxford Button-Down Shirt", description: "Crisp oxford cotton shirt with button-down collar, a wardrobe essential.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1602810318383-e386cc2a3ccf?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Shirts" },
-      { name: "Tailored Chino Trousers", description: "Slim-fit chinos crafted from stretch-cotton twill for all-day comfort.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1624371414361-e67094c24944?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Trousers" },
-      { name: "Formal Pleated Trousers", description: "Tailored pleated trousers in fine wool blend, ideal for the office.", price: "3499", imageUrl: "https://images.unsplash.com/photo-1473966968600-fa801b869a1a?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Trousers" },
-      { name: "Slim Fit Dark Wash Jeans", description: "Classic 5-pocket jeans in premium dark indigo denim with stretch.", price: "2799", imageUrl: "https://images.unsplash.com/photo-1542272604-787c3835535d?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Jeans" },
-      { name: "Relaxed Fit Light Jeans", description: "Comfortable relaxed-fit jeans in faded light wash denim.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1582552938357-32b906df40cb?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Jeans" },
-      { name: "Leather Biker Jacket", description: "Genuine leather biker jacket with zip detailing and quilted shoulders.", price: "8999", imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Jackets" },
-      { name: "Puffer Winter Jacket", description: "Warm padded puffer jacket with water-resistant shell and hood.", price: "4999", imageUrl: "https://images.unsplash.com/photo-1591047139829-d91aecb6caea?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Jackets" },
-      // ===== MENS - Muscle Tees =====
-      { name: "Ribbed Black Muscle Tee", description: "Slim-fit ribbed cotton muscle tee in jet black. Cropped armholes, drop shoulders — built for the gym, made for the streets.", price: "899", imageUrl: "https://images.unsplash.com/photo-1583743814966-8936f5b7be1a?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Olive Drop-Cut Muscle Tee", description: "Heavyweight olive muscle tee with raw-cut armholes and elongated hem. Streetwear staple for layering.", price: "999", imageUrl: "https://images.unsplash.com/photo-1571945153237-4929e783af4a?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Stone Wash Vintage Muscle Tee", description: "Sun-faded stone-wash cotton muscle tee with a worn-in feel. Boxy fit, deep arm openings.", price: "1099", imageUrl: "https://images.unsplash.com/photo-1581655353564-df123a1eb820?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "White Performance Muscle Tee", description: "Quick-dry performance muscle tee in clean white. Mesh-back panel for ventilation during heavy lifts.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1622445275576-721325763afe?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Graphic Print Muscle Tee", description: "Bold graphic-print muscle tee in charcoal. Soft-hand cotton, oversized cut, gym-to-street ready.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1618354691373-d851c5c3a990?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Burgundy Ribbed Muscle Tee", description: "Deep burgundy ribbed muscle tee with a stretchy fit that hugs the chest and shoulders.", price: "949", imageUrl: "https://images.unsplash.com/photo-1556821840-3a63f95609a7?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Acid Wash Muscle Tank", description: "Statement acid-wash muscle tee with extra-deep arm cuts. Made for max gun-show.", price: "1099", imageUrl: "https://images.unsplash.com/photo-1602810318383-e386cc2a3ccf?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      { name: "Heavyweight Cropped Muscle Tee", description: "Boxy heavyweight muscle tee with a cropped hem. Pairs perfectly with joggers or cargos.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1617952236317-0bd127407984?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Muscle Tees" },
-      // ===== MENS - Ethnic Wear =====
-      { name: "Cotton Kurta Set", description: "Traditional cotton kurta with embroidered neckline, paired with churidar.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Kurtas" },
-      { name: "Silk Blend Kurta", description: "Festive silk blend kurta with intricate threadwork and mandarin collar.", price: "4499", imageUrl: "https://images.unsplash.com/photo-1598522325074-042db73aa4e6?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Kurtas" },
-      { name: "Classic Nehru Jacket", description: "Mandarin collar Nehru jacket in textured cotton, versatile layering piece.", price: "3499", imageUrl: "https://images.unsplash.com/photo-1594938298603-c8148c4dae35?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Nehru Jackets" },
-      { name: "Brocade Nehru Jacket", description: "Festive brocade Nehru jacket with silk lining, ideal for celebrations.", price: "4999", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Nehru Jackets" },
-      // ===== MENS - Athleisure =====
-      { name: "Slim Fit Joggers", description: "Tapered slim-fit joggers in French terry with zip pockets.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1624371414361-e67094c24944?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Joggers" },
-      { name: "Cotton Blend Joggers", description: "Relaxed cotton-blend joggers with elastic cuffs and drawstring waist.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1473966968600-fa801b869a1a?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Joggers" },
-      { name: "Striped Track Pants", description: "Classic track pants with side stripe and elasticated waistband.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1624371414361-e67094c24944?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Track Pants" },
-      { name: "Quick-Dry Track Pants", description: "Lightweight quick-dry track pants with mesh-lined pockets for workouts.", price: "1599", imageUrl: "https://images.unsplash.com/photo-1473966968600-fa801b869a1a?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Track Pants" },
-      { name: "Dri-Fit Sports T-Shirt", description: "Moisture-wicking sports tee with flatlock seams for gym and running.", price: "999", imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sports T-Shirts" },
-      { name: "Compression Sports Tee", description: "Performance compression tee with breathable mesh panels.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sports T-Shirts" },
-      { name: "Fleece Pullover Hoodie", description: "Warm fleece hoodie with kangaroo pocket and adjustable drawstring hood.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Hoodies" },
-      { name: "Zip-Up Training Hoodie", description: "Full-zip training hoodie in lightweight tech fabric with thumb holes.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1591047139829-d91aecb6caea?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Hoodies" },
-      // ===== MENS - Accessories =====
-      { name: "Mens Chronograph Watch", description: "Sleek stainless steel chronograph watch with leather strap.", price: "7999", imageUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Watches" },
-      { name: "Reversible Leather Belt", description: "Premium reversible leather belt with polished buckle, black to brown.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Belts" },
-      { name: "Genuine Leather Wallet", description: "Slim bifold wallet in genuine leather with RFID protection.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Wallets" },
-      { name: "Aviator Sunglasses", description: "Classic aviator sunglasses with UV400 protection and metal frame.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1572635196237-14b3f281503f?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sunglasses" },
-      // ===== MENS - Footwear =====
-      { name: "Mens White Sneakers", description: "Clean white leather sneakers with cushioned insole for everyday wear.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sneakers" },
-      { name: "Retro Running Sneakers", description: "Retro-inspired running sneakers with suede panels and mesh upper.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sneakers" },
-      { name: "Derby Formal Shoes", description: "Classic derby shoes in polished leather for formal occasions.", price: "5999", imageUrl: "https://images.unsplash.com/photo-1614252235316-8c857d38b5f4?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Formal Shoes" },
-      { name: "Cap-Toe Oxford Shoes", description: "Elegant cap-toe oxford shoes handcrafted from premium calfskin.", price: "7499", imageUrl: "https://images.unsplash.com/photo-1533867617858-e7b97e060509?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Formal Shoes" },
-      { name: "Leather Slide Sandals", description: "Minimalist leather slide sandals with contoured cork footbed.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1603487742131-4160ec999306?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Sandals" },
-      { name: "Handcrafted Leather Loafers", description: "Classic loafers in premium Italian leather with polished finish.", price: "5499", imageUrl: "https://images.unsplash.com/photo-1614252235316-8c857d38b5f4?q=80&w=800&auto=format&fit=crop", category: "Mens", subcategory: "Loafers" },
-
-      // ===== LADIES - Western Wear =====
-      { name: "Relaxed Fit Women's T-Shirt", description: "Soft cotton tee with a relaxed drop-shoulder fit, everyday essential.", price: "799", imageUrl: "https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "T-Shirts" },
-      { name: "Printed V-Neck T-Shirt", description: "Trendy V-neck tee with abstract print in breathable cotton jersey.", price: "999", imageUrl: "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "T-Shirts" },
-      { name: "Ruffle Blouse Top", description: "Feminine ruffle blouse in lightweight chiffon with tie-neck detail.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Tops" },
-      { name: "Cropped Knit Top", description: "Cropped ribbed knit top with short sleeves and fitted silhouette.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Tops" },
-      { name: "Satin Wrap Dress", description: "Elegant satin wrap dress with a graceful drape, perfect for evening.", price: "4599", imageUrl: "https://images.unsplash.com/photo-1595777457583-95e059d581b8?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Dresses" },
-      { name: "Floral Midi Dress", description: "Romantic floral print midi dress with puff sleeves and tiered skirt.", price: "3299", imageUrl: "https://images.unsplash.com/photo-1572804013309-59a88b7e92f1?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Dresses" },
-      { name: "High-Rise Skinny Jeans", description: "Sculpting high-rise skinny jeans in power-stretch denim.", price: "2799", imageUrl: "https://images.unsplash.com/photo-1541099649105-f69ad21f3246?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Jeans" },
-      { name: "Wide Leg Palazzo Jeans", description: "Trendy wide-leg palazzo jeans in light blue wash.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1475178626620-a4d074967571?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Jeans" },
-      { name: "Pleated Midi Skirt", description: "Elegant pleated midi skirt in satin finish with elastic waistband.", price: "2199", imageUrl: "https://images.unsplash.com/photo-1592301933927-35b597393c0a?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Skirts" },
-      { name: "Denim Mini Skirt", description: "Classic denim mini skirt with raw hem and button-front closure.", price: "1599", imageUrl: "https://images.unsplash.com/photo-1592301933927-35b597393c0a?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Skirts" },
-      { name: "Cropped Denim Jacket", description: "Classic cropped denim jacket with vintage wash and brass buttons.", price: "2999", imageUrl: "https://images.unsplash.com/photo-1551537482-f2075a1d41f2?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Jackets" },
-      { name: "Ribbed Cord Set", description: "Matching ribbed crop top and wide-leg trousers in soft jersey knit.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Linen Co-ord Set", description: "Breezy linen shirt and shorts co-ord set, perfect for summer outings.", price: "2799", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Women's Jogger & Crop Top Set", description: "Matching jogger and crop top athleisure set in soft cotton blend.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Athleisure" },
-      { name: "High-Waist Leggings", description: "Sculpting high-waist leggings with breathable fabric for yoga and gym.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Athleisure" },
-      // ===== LADIES - Indian Wear =====
-      { name: "Embroidered Anarkali Kurta", description: "Gorgeous Anarkali kurta with intricate embroidery and flared silhouette.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Kurtas" },
-      { name: "Cotton Printed Kurta", description: "Breezy cotton kurta with block print and notched neckline.", price: "1899", imageUrl: "https://images.unsplash.com/photo-1598522325074-042db73aa4e6?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Kurtas" },
-      { name: "Mirror Work Kurta Set", description: "Festive kurta with mirror work paired with palazzo pants and dupatta.", price: "4499", imageUrl: "https://images.unsplash.com/photo-1598522325074-042db73aa4e6?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Kurta Sets" },
-      { name: "Cotton Kurta Pyjama Set", description: "Comfortable cotton kurta and pyjama set with contrast piping.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Kurta Sets" },
-      { name: "Bridal Lehenga Choli", description: "Stunning bridal lehenga with heavy embroidery, sequins and dupatta.", price: "14999", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Lehengas" },
-      { name: "Flared Party Lehenga", description: "Vibrant flared lehenga with foil print and contrast choli.", price: "6999", imageUrl: "https://images.unsplash.com/photo-1598522325074-042db73aa4e6?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Lehengas" },
-      // ===== LADIES - Indian Cord Sets =====
-      { name: "Crimson Embroidered Cord Set", description: "Vibrant crimson kurta with delicate floral embroidery, paired with matching palazzo. Perfect for festive occasions.", price: "899", imageUrl: "/products/cordset-01-red-embroidered.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Olive Collared Cord Set", description: "Olive green collared kurta with traditional cream motif border, paired with straight-fit palazzo. Effortless ethnic charm.", price: "899", imageUrl: "/products/cordset-02-olive-collared.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Coral Pink Collared Cord Set", description: "Bright coral pink kurta with collared neckline and intricate cream motif hem, paired with straight palazzo.", price: "899", imageUrl: "/products/cordset-03-coral-collared.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Sage Green Collared Cord Set", description: "Soothing sage green collared kurta with elegant cream embroidery, paired with matching palazzo. A graceful daywear pick.", price: "899", imageUrl: "/products/cordset-04-sage-collared.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Off-White Tassel Kurta Set", description: "Pristine off-white kurta with tassel detailing and contrast border, paired with palazzo and printed dupatta.", price: "899", imageUrl: "/products/cordset-05-offwhite-tassel.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Prisha Pink Floral Kurta Set", description: "Soft pink kurta with delicate floral embroidery, paired with palazzo and matching dupatta. Light, breezy and graceful.", price: "899", imageUrl: "/products/cordset-06-pink-floral.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Mustard Anarkali Cord Set", description: "Statement mustard yellow Anarkali kurta with intricate floral yoke embroidery, paired with palazzo and embroidered dupatta.", price: "899", imageUrl: "/products/cordset-07-mustard-anarkali.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Rust Red Anarkali Cord Set", description: "Rich rust red Anarkali with floral thread work, paired with cigarette pants and embroidered dupatta. Festive and feminine.", price: "899", imageUrl: "/products/cordset-08-rust-anarkali.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Prisha White Floral Shirt Set", description: "Crisp white shirt-style kurta with hand-painted floral motif, paired with breezy palazzo. Modern fusion ethnic wear.", price: "899", imageUrl: "/products/cordset-09-white-floral-shirt.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Prisha Sage Floral Shirt Set", description: "Sage green shirt-style kurta with floral thread embroidery, paired with palazzo. Effortless contemporary ethnic style.", price: "899", imageUrl: "/products/cordset-10-sage-floral-shirt.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      { name: "Prisha Mustard Motif Cord Set", description: "Mustard yellow A-line kurta with traditional ajrakh-inspired motifs, paired with pants and printed dupatta. Heritage meets everyday.", price: "899", imageUrl: "/products/cordset-11-mustard-motif.jpeg", category: "Ladies", subcategory: "Cord Sets" },
-      // ===== LADIES - Sleepwear =====
-      { name: "Satin Nightdress", description: "Luxurious satin nightdress with lace trim and adjustable straps.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Nightdresses" },
-      { name: "Cotton Maxi Nightdress", description: "Breathable cotton maxi nightdress with delicate floral print.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Nightdresses" },
-      { name: "Printed Pyjama Set", description: "Cute printed button-down shirt and pyjama set in soft cotton.", price: "1599", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Pyjama Sets" },
-      { name: "Satin Pyjama Set", description: "Elegant satin pyjama set with piping detail, smooth and comfortable.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Pyjama Sets" },
-      // ===== LADIES - Intimate Wear =====
-      { name: "T-Shirt Bra", description: "Seamless padded T-shirt bra with smooth cups for everyday wear.", price: "899", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Bras" },
-      { name: "Lace Underwire Bra", description: "Delicate lace underwire bra with adjustable straps and hook closure.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Bras" },
-      { name: "Lace Bralette & Brief Set", description: "Matching lace bralette and brief set in soft stretch fabric.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1485462537746-965f33f7f6a7?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Lingerie Sets" },
-      { name: "Satin Cami & Shorts Set", description: "Luxurious satin cami and shorts lingerie set with lace edging.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1564257631407-4deb1f99d992?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Lingerie Sets" },
-      // ===== LADIES - Footwear =====
-      { name: "Block Heel Pumps", description: "Comfortable block heel pumps in suede with pointed toe.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1543163521-1bf539c55dd2?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Heels" },
-      { name: "Stiletto Heels", description: "Sleek stiletto heels in patent leather for evening glamour.", price: "4499", imageUrl: "https://images.unsplash.com/photo-1515347619252-60a4bf4fff4f?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Heels" },
-      { name: "Embellished Ballet Flats", description: "Elegant ballet flats with jewel embellishment and cushioned insole.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1562273138-f46be4ebdf33?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Flats" },
-      { name: "Pointed Toe Flats", description: "Chic pointed-toe flats in soft leather, perfect for office to evening.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1543163521-1bf539c55dd2?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Flats" },
-      { name: "Women's Canvas Sneakers", description: "Clean white canvas sneakers with platform sole for casual styling.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Sneakers" },
-      { name: "Strappy Flat Sandals", description: "Elegant strappy sandals in soft leather with cushioned sole.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1562273138-f46be4ebdf33?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Sandals" },
-      { name: "Wedge Heel Sandals", description: "Comfortable wedge sandals with jute-wrapped heel and ankle strap.", price: "2799", imageUrl: "https://images.unsplash.com/photo-1603487742131-4160ec999306?q=80&w=800&auto=format&fit=crop", category: "Ladies", subcategory: "Sandals" },
-
-      // ===== KIDS - Boys =====
-      { name: "Boys Dinosaur Print Tee", description: "Fun dinosaur graphic tee in soft cotton jersey for little explorers.", price: "599", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "T-Shirts" },
-      { name: "Boys Striped Polo", description: "Smart striped polo t-shirt in breathable piqué cotton for boys.", price: "799", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "T-Shirts" },
-      { name: "Boys Check Shirt", description: "Classic check shirt in soft cotton with button-down collar for boys.", price: "999", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Shirts" },
-      { name: "Boys Denim Shirt", description: "Casual denim shirt with snap buttons, cool and comfortable.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Shirts" },
-      { name: "Boys Slim Fit Jeans", description: "Stretchy slim-fit jeans for boys with adjustable inner waist.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Jeans" },
-      { name: "Cargo Shorts", description: "Durable cotton cargo shorts with adjustable waist and side pockets.", price: "899", imageUrl: "https://images.unsplash.com/photo-1591195853828-11db59a44f6b?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Shorts" },
-      { name: "Denim Shorts", description: "Comfortable stretch denim shorts with elastic waistband.", price: "799", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Shorts" },
-      { name: "Boys Quilted Jacket", description: "Lightweight quilted jacket with water-repellent finish for boys.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1591047139829-d91aecb6caea?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Jackets" },
-      { name: "Boys Kurta Pyjama Set", description: "Festive cotton kurta pyjama set with embroidered motifs for boys.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Ethnic Wear" },
-      // ===== KIDS - Girls =====
-      { name: "Girls Floral Frock", description: "Adorable floral print frock with ruffled hem and bow detail.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Dresses" },
-      { name: "Party Tulle Dress", description: "Sparkly tulle party dress with sequin bodice for special occasions.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1518831959646-742c3a14ebf7?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Dresses" },
-      { name: "Girls Peplum Top", description: "Cute peplum top with butterfly print and flutter sleeves for girls.", price: "699", imageUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Tops" },
-      { name: "Girls Embroidered Top", description: "Pretty embroidered cotton top with lace trim and back buttons.", price: "899", imageUrl: "https://images.unsplash.com/photo-1518831959646-742c3a14ebf7?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Tops" },
-      { name: "Girls Pleated Skirt", description: "Playful pleated skirt with elastic waist in fun polka dot print.", price: "799", imageUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Skirts" },
-      { name: "Girls Denim Skirt", description: "Stretchy denim skirt with heart-shaped pockets for little girls.", price: "899", imageUrl: "https://images.unsplash.com/photo-1518831959646-742c3a14ebf7?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Skirts" },
-      { name: "Girls Cotton Leggings", description: "Soft stretch cotton leggings with fun printed patterns.", price: "499", imageUrl: "https://images.unsplash.com/photo-1524504388940-b1c1722653e1?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Leggings" },
-      { name: "Girls Windbreaker Jacket", description: "Colourful hooded windbreaker with reflective strips for girls.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1551028719-00167b16eac5?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Jackets" },
-      { name: "Girls Lehenga Choli", description: "Adorable lehenga choli set with mirror work and dupatta.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1598522325074-042db73aa4e6?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Ethnic Wear" },
-      // ===== KIDS - Infants =====
-      { name: "Cotton Romper", description: "Soft cotton romper with snap buttons for easy changing, gentle on skin.", price: "599", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Rompers" },
-      { name: "Printed Dungaree Romper", description: "Adorable printed dungaree romper in organic cotton for babies.", price: "799", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Rompers" },
-      { name: "Striped Onesie", description: "Cosy striped onesie with envelope neck and snap leg closure.", price: "499", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Onesies" },
-      { name: "Animal Print Onesie", description: "Cute animal print onesie in ultra-soft muslin cotton for newborns.", price: "599", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Onesies" },
-      { name: "Infant Gift Set", description: "5-piece infant gift set with onesie, bib, cap, mittens and booties.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sets" },
-      { name: "Organic Cotton Baby Set", description: "Three-piece organic cotton set with bodysuit, pants and hat.", price: "999", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sets" },
-      { name: "Fleece Sleepsuit", description: "Warm fleece sleepsuit with zip front and non-slip feet for babies.", price: "899", imageUrl: "https://images.unsplash.com/photo-1621454523226-eb4045de3a05?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sleepsuits" },
-      { name: "Cotton Sleepsuit Pack", description: "Pack of 2 cotton sleepsuits with fun animal prints and snap buttons.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1519238263530-99abe11d5163?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sleepsuits" },
-      // ===== KIDS - Footwear =====
-      { name: "Kids Velcro Sneakers", description: "Easy velcro-strap sneakers with cushioned sole for active kids.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sneakers" },
-      { name: "Kids Light-Up Sneakers", description: "Fun light-up sole sneakers that flash with every step.", price: "1599", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sneakers" },
-      { name: "Kids Sports Sandals", description: "Durable sports sandals with adjustable straps and grippy sole.", price: "899", imageUrl: "https://images.unsplash.com/photo-1603487742131-4160ec999306?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sandals" },
-      { name: "Kids Velcro Sandals", description: "Comfortable velcro sandals with soft footbed for everyday wear.", price: "699", imageUrl: "https://images.unsplash.com/photo-1562273138-f46be4ebdf33?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Sandals" },
-      { name: "Boys Black School Shoes", description: "Smart black school shoes in durable synthetic leather.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1614252235316-8c857d38b5f4?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "School Shoes" },
-      { name: "Girls School Shoes", description: "Polished black school shoes with buckle strap for girls.", price: "1399", imageUrl: "https://images.unsplash.com/photo-1533867617858-e7b97e060509?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "School Shoes" },
-      { name: "Soft Sole Baby Booties", description: "Ultra-soft booties with non-slip sole for first walkers.", price: "599", imageUrl: "https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Booties" },
-      { name: "Knitted Baby Booties", description: "Hand-knitted cotton booties with elastic ankle for snug fit.", price: "499", imageUrl: "https://images.unsplash.com/photo-1542291026-7eec264c27ff?q=80&w=800&auto=format&fit=crop", category: "Kids", subcategory: "Booties" },
-
-      // ===== ACCESSORIES =====
-      { name: "Minimalist Chronograph Watch", description: "Sleek stainless steel watch with minimalist dial and leather strap.", price: "7999", imageUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Watches" },
-      { name: "Rose Gold Digital Watch", description: "Modern rose gold digital watch with mesh band and date display.", price: "4999", imageUrl: "https://images.unsplash.com/photo-1524592094714-0f0654e20314?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Watches" },
-      { name: "Leather Tote Bag", description: "Spacious genuine leather tote bag with inner zip pocket.", price: "5499", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Bags" },
-      { name: "Canvas Crossbody Bag", description: "Casual canvas crossbody bag with adjustable strap and brass hardware.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Bags" },
-      { name: "Braided Canvas Belt", description: "Casual braided canvas belt with leather trim and metal buckle.", price: "799", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Belts" },
-      { name: "Cat Eye Sunglasses", description: "Retro cat-eye sunglasses with gradient lenses and acetate frame.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1511499767150-a48a237f0083?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Sunglasses" },
-      { name: "Gold Layered Necklace", description: "Delicate gold-plated layered necklace with dainty pendants.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1515562141589-67f0d569b6c6?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Silver Hoop Earrings", description: "Sterling silver hoop earrings with brushed finish, everyday elegance.", price: "899", imageUrl: "https://images.unsplash.com/photo-1535632066927-ab7c9ab60908?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Hammered Gold Square Stud Earrings", description: "Statement hammered gold-tone square stud earrings with a luxe textured finish. Lightweight and effortlessly elegant.", price: "299", imageUrl: "/products/jewel-01-square-stud.png", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Gold Square Stud Earrings (On Model)", description: "Hammered gold-tone square studs styled for everyday luxe. Pairs with both ethnic and western looks.", price: "299", imageUrl: "/products/jewel-02-square-stud-model.png", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Twisted Gold Doorknocker Earrings", description: "Bold twisted-rope doorknocker hoops in polished gold tone. A modern take on a classic silhouette.", price: "299", imageUrl: "/products/jewel-03-twisted-hoop.png", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Hammered Gold Teardrop Earrings", description: "Sculptural teardrop earrings with intricate hammered detailing. A statement-making everyday piece.", price: "299", imageUrl: "/products/jewel-04-teardrop.png", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Gold Teardrop Earrings (On Model)", description: "Hammered gold-tone teardrop earrings styled for an editorial look. Lightweight, polished, versatile.", price: "299", imageUrl: "/products/jewel-05-teardrop-model.png", category: "Accessories", subcategory: "Jewellery" },
-      { name: "Cashmere Wool Scarf", description: "Ultra-soft cashmere wool scarf in classic plaid pattern.", price: "3499", imageUrl: "https://images.unsplash.com/photo-1520903920243-00d872a2d1c9?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Scarves" },
-      { name: "Silk Print Scarf", description: "Luxurious silk scarf with artistic floral print, versatile styling.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1601924921557-45e8e0e78e68?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Scarves" },
-
-      // ===== FOOTWEAR (standalone category) =====
-      { name: "White Canvas Sneakers", description: "Clean white canvas sneakers with cushioned insole and rubber outsole.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1525966222134-fcfa99b8ae77?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Sneakers" },
-      { name: "High-Top Sneakers", description: "Bold high-top sneakers in premium leather with contrast stitching.", price: "4499", imageUrl: "https://images.unsplash.com/photo-1551107696-a4b0c5a0d9a2?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Sneakers" },
-      { name: "Oxford Formal Shoes", description: "Classic Oxford shoes in polished leather for formal occasions.", price: "5999", imageUrl: "https://images.unsplash.com/photo-1614252235316-8c857d38b5f4?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Formal Shoes" },
-      { name: "Leather Slide Sandals", description: "Minimalist leather slide sandals with contoured cork footbed.", price: "1999", imageUrl: "https://images.unsplash.com/photo-1603487742131-4160ec999306?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Sandals" },
-      { name: "Strappy Flat Sandals", description: "Elegant strappy sandals in soft leather with cushioned sole.", price: "2299", imageUrl: "https://images.unsplash.com/photo-1562273138-f46be4ebdf33?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Sandals" },
-      { name: "Block Heel Pumps", description: "Comfortable block heel pumps in suede with pointed toe.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1543163521-1bf539c55dd2?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Heels" },
-      { name: "Chelsea Ankle Boots", description: "Classic Chelsea boots in premium leather with elastic side panel.", price: "5999", imageUrl: "https://images.unsplash.com/photo-1608256246200-53e635b5b65f?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Boots" },
-      { name: "Combat Lace-Up Boots", description: "Rugged combat boots with thick sole and sturdy lace-up closure.", price: "4999", imageUrl: "https://images.unsplash.com/photo-1605733160314-4fc7dac4bb16?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Boots" },
-      { name: "Suede Tassel Loafers", description: "Refined suede loafers with tassel detail and flexible rubber sole.", price: "4299", imageUrl: "https://images.unsplash.com/photo-1533867617858-e7b97e060509?q=80&w=800&auto=format&fit=crop", category: "Footwear", subcategory: "Loafers" },
-
-      // ===== COSMETICS - Makeup =====
+      // ===== JEWELLERY - Earrings =====
+      { name: "Gold Plated Chandbali Earrings", description: "Intricate gold plated chandbali earrings with pearl drops and meenakari work. Perfect for festive occasions.", price: "799", imageUrl: "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Chandbalis" },
+      { name: "Silver Jhumka Earrings", description: "Classic silver jhumka earrings with intricate filigree work and small pearl drops. A timeless Indian design.", price: "599", imageUrl: "https://images.unsplash.com/photo-1535632787350-4e68ef0ac584?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Jhumkas" },
+      { name: "Rose Gold Hoop Earrings", description: "Minimalist rose gold hoop earrings in sterling silver with 18k rose gold plating. Lightweight and elegant.", price: "499", imageUrl: "https://images.unsplash.com/photo-1603561596112-0a132b757442?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Hoops" },
+      { name: "Kundan Dangler Earrings", description: "Handcrafted kundan dangler earrings with coloured stone inserts and gold plating. Ideal for weddings and parties.", price: "999", imageUrl: "https://images.unsplash.com/photo-1611085583191-a3b181a88401?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Danglers" },
+      { name: "Diamond Cut Stud Earrings", description: "Elegant diamond-cut cubic zirconia stud earrings in white gold plating. Timeless and versatile.", price: "449", imageUrl: "https://images.unsplash.com/photo-1602173574767-37ac01994b2a?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Studs" },
+      { name: "Oxidised Silver Jhumka", description: "Antique oxidised silver finish jhumka earrings with tribal motifs. Bohemian-ethnic style.", price: "399", imageUrl: "https://images.unsplash.com/photo-1535632787350-4e68ef0ac584?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Jhumkas" },
+      { name: "Pearl Drop Earrings", description: "Delicate freshwater pearl drop earrings with gold plated hook. Soft, feminine and effortlessly elegant.", price: "649", imageUrl: "https://images.unsplash.com/photo-1611085583191-a3b181a88401?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Danglers" },
+      { name: "Meenakari Chandbali Set", description: "Vibrant meenakari chandbali earrings with traditional peacock motif in blue and green enamel work.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Chandbalis" },
+      // ===== JEWELLERY - Necklaces =====
+      { name: "Gold Plated Temple Necklace", description: "Traditional temple jewellery necklace with lakshmi coin pendants and ruby coloured stones. South Indian design.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1619451334792-150fd785ee74?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Necklaces" },
+      { name: "Layered Beads Necklace", description: "Multi-strand layered necklace with crystal beads and gold plated spacers. Modern boho-chic style.", price: "699", imageUrl: "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Layered Sets" },
+      { name: "Kundan Choker Necklace", description: "Regal kundan choker with emerald green stones and intricate gold meenakari backing. Bridal-inspired design.", price: "1899", imageUrl: "https://images.unsplash.com/photo-1619451334792-150fd785ee74?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Chokers" },
+      { name: "Black Thread Mangalsutra", description: "Traditional black beads mangalsutra with gold plated pendant. Lightweight and wearable every day.", price: "899", imageUrl: "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Mangalsutra" },
+      { name: "Pearl Strand Necklace", description: "Classic single-strand freshwater pearl necklace with sterling silver clasp. Timeless elegance for every occasion.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1619451334792-150fd785ee74?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Necklaces" },
+      // ===== JEWELLERY - Bangles & Bracelets =====
+      { name: "Glass Bangle Set — 12 Pcs", description: "Vibrant glass bangle set in assorted festive colours. Sold as a set of 12 for the perfect stack.", price: "299", imageUrl: "https://images.unsplash.com/photo-1611085583191-a3b181a88401?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Bangles" },
+      { name: "Gold Plated Kada Bangle", description: "Broad gold plated kada with floral embossed design. A statement piece for ethnic occasions.", price: "799", imageUrl: "https://images.unsplash.com/photo-1603561596112-0a132b757442?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Kada" },
+      { name: "Charm Bracelet — Rose Gold", description: "Dainty rose gold charm bracelet with celestial charms — star, moon, and heart. Adjustable chain.", price: "549", imageUrl: "https://images.unsplash.com/photo-1602173574767-37ac01994b2a?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Bracelets" },
+      { name: "Oxidised Bangle Set — 6 Pcs", description: "Antique oxidised silver bangle set with tribal patterns. Traditional craft meets contemporary styling.", price: "499", imageUrl: "https://images.unsplash.com/photo-1535632787350-4e68ef0ac584?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Bangles" },
+      // ===== JEWELLERY - Rings =====
+      { name: "Adjustable Floral Ring", description: "Delicate adjustable ring with floral motif in gold plating. One size fits most — free size.", price: "299", imageUrl: "https://images.unsplash.com/photo-1605100804763-247f67b3557e?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Rings" },
+      { name: "Kundan Statement Ring", description: "Bold kundan cocktail ring with multi-colour stones in gold base. Eye-catching party wear.", price: "549", imageUrl: "https://images.unsplash.com/photo-1605100804763-247f67b3557e?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Rings" },
+      // ===== JEWELLERY - Sets =====
+      { name: "Bridal Jewellery Set — Red & Gold", description: "Complete bridal set with necklace, earrings, maang tikka and passa. Kundan work with red stones.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1619451334792-150fd785ee74?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Jewellery Sets" },
+      { name: "Everyday Pearl Jewellery Set", description: "Classic pearl necklace and earring set in freshwater pearls with gold plated findings.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Jewellery Sets" },
+      { name: "Maang Tikka — Gold & Pearl", description: "Traditional maang tikka with gold plated chain and freshwater pearl centrepiece. Bridal and festive wear.", price: "699", imageUrl: "https://images.unsplash.com/photo-1599643478518-a784e5dc4c8f?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Maang Tikka" },
+      { name: "Anklet Set — Silver Payal", description: "Pair of sterling silver anklets with tiny ghungroo bells. Traditional design, adjustable chain.", price: "399", imageUrl: "https://images.unsplash.com/photo-1611085583191-a3b181a88401?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Anklets" },
+      { name: "Nose Pin — Gold Plated", description: "Delicate L-shaped nose pin in gold plating with a single cubic zirconia stone.", price: "199", imageUrl: "https://images.unsplash.com/photo-1602173574767-37ac01994b2a?q=80&w=800&auto=format&fit=crop", category: "Jewellery", subcategory: "Nose Pins" },
+      // ===== COSMETICS - Lip =====
       { name: "Velvet Matte Lipstick — Classic Red", description: "Long-lasting velvet matte finish in bold classic red. Enriched with vitamin E for all-day comfort.", price: "499", imageUrl: "https://images.unsplash.com/photo-1586495777744-4413f21062fa?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Lip Colour" },
       { name: "Nude Crème Lipstick", description: "Creamy nude lipstick with satin finish. Hydrating formula perfect for everyday wear.", price: "449", imageUrl: "https://images.unsplash.com/photo-1631214500115-598fc2cb8ada?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Lip Colour" },
       { name: "Berry Lip Gloss", description: "High-shine berry lip gloss with plumping effect. Non-sticky, mirror-like finish.", price: "349", imageUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Lip Colour" },
+      { name: "Pink Nude Liquid Lip Colour", description: "Liquid lip colour in dusty pink nude. Transfer-proof, long-wear formula. Comfortable all day.", price: "399", imageUrl: "https://images.unsplash.com/photo-1586495777744-4413f21062fa?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Lip Colour" },
+      // ===== COSMETICS - Face =====
       { name: "Liquid Foundation — Natural Beige", description: "Lightweight liquid foundation with medium coverage. Blends seamlessly for a natural, dewy look.", price: "799", imageUrl: "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Foundation" },
       { name: "Full Coverage Foundation — Ivory", description: "Buildable full-coverage foundation with SPF 15. Controls shine for up to 12 hours.", price: "999", imageUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Foundation" },
       { name: "Rose Petal Blush", description: "Silky powder blush in soft rose with micro-shimmer. Buildable colour for a natural flush.", price: "499", imageUrl: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Blush" },
       { name: "Peach Glow Cream Blush", description: "Cream blush stick in warm peach. Blends effortlessly with fingertips or a beauty blender.", price: "549", imageUrl: "https://images.unsplash.com/photo-1631214500115-598fc2cb8ada?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Blush" },
+      // ===== COSMETICS - Eyes =====
       { name: "Smokey Eyeshadow Palette — 12 Shades", description: "Professional 12-shade eyeshadow palette with mattes, shimmers, and metallics for smokey eye looks.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1583241800698-e8ab01b0b08e?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Eyeshadow" },
       { name: "Nude Eyeshadow Palette — 8 Shades", description: "Everyday nude palette with 8 curated shades. Buttery soft texture with high pigmentation.", price: "899", imageUrl: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Eyeshadow" },
       { name: "Intense Black Kajal", description: "24-hour smudge-proof kajal pencil in intense black. Ophthalmologist-tested, safe for sensitive eyes.", price: "249", imageUrl: "https://images.unsplash.com/photo-1631214500115-598fc2cb8ada?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Kajal" },
       { name: "Waterproof Kajal Stick", description: "Twist-up waterproof kajal with creamy glide. Lasts through sweat, humidity, and tears.", price: "299", imageUrl: "https://images.unsplash.com/photo-1596462502278-27bfdc403348?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Kajal" },
       { name: "Volumising Mascara", description: "Dramatic volumising mascara with curved brush for lifted, separated lashes. Clump-free formula.", price: "599", imageUrl: "https://images.unsplash.com/photo-1631214500115-598fc2cb8ada?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Mascara" },
-      { name: "Gel Nail Polish — Ruby", description: "Chip-resistant gel nail polish in deep ruby. Salon-quality shine, no UV lamp needed.", price: "199", imageUrl: "https://images.unsplash.com/photo-1604654894610-df63bc536371?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Nail Polish" },
-      { name: "Pastel Nail Polish Set — 4 Pack", description: "Set of 4 pastel gel polishes in lavender, mint, blush, and baby blue. Quick-dry formula.", price: "599", imageUrl: "https://images.unsplash.com/photo-1604654894610-df63bc536371?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Nail Polish" },
-      { name: "Complete Makeup Kit — Bridal", description: "All-in-one bridal makeup kit with foundation, blush, lipstick set, eyeshadow palette, mascara, and brushes.", price: "3999", imageUrl: "https://images.unsplash.com/photo-1512496015851-a90fb38ba796?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Makeup Kit" },
-      // ===== COSMETICS - Care =====
-      { name: "Vitamin C Brightening Serum", description: "Powerful 20% vitamin C serum with hyaluronic acid. Brightens, hydrates, and reduces dark spots.", price: "899", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Skin Care" },
-      { name: "SPF 50 Sunscreen — Matte Finish", description: "Lightweight SPF 50 sunscreen with matte finish. No white cast, ideal under makeup.", price: "549", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Skin Care" },
-      { name: "Keratin Hair Serum", description: "Anti-frizz keratin hair serum for smooth, shiny, manageable hair. Heat-protectant up to 230°C.", price: "649", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Hair Care" },
-      { name: "Argan Oil Hair Mask", description: "Deep-conditioning argan oil hair mask for dry, damaged hair. Restores moisture and shine in 10 minutes.", price: "499", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Hair Care" },
+      // ===== COSMETICS - Skincare =====
+      { name: "Vitamin C Face Serum — 30ml", description: "Brightening vitamin C serum with 10% ascorbic acid and hyaluronic acid. Fades dark spots, boosts glow.", price: "899", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Serums" },
+      { name: "Niacinamide 10% Serum — 30ml", description: "Oil-control niacinamide serum that minimises pores and reduces blemishes. Suitable for all skin types.", price: "799", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Serums" },
+      { name: "Rose Water Toner — 100ml", description: "Pure rose water toner that balances pH, hydrates, and preps skin for moisturiser. Alcohol-free.", price: "299", imageUrl: "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Toner" },
+      { name: "SPF 50 Sunscreen — 50ml", description: "Lightweight SPF 50 PA++++ sunscreen with no white cast. Non-greasy, mattifying finish.", price: "499", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Sunscreen" },
+      { name: "Hyaluronic Acid Moisturiser", description: "Lightweight gel moisturiser with 3 types of hyaluronic acid for 72-hour hydration. Plumps and softens skin.", price: "649", imageUrl: "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Moisturiser" },
+      { name: "Charcoal Face Wash — 100ml", description: "Deep-cleansing activated charcoal face wash that draws out impurities and excess oil. Gentle foam.", price: "349", imageUrl: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Face Wash" },
+      // ===== COSMETICS - Fragrance =====
       { name: "Floral Eau de Parfum — 50ml", description: "Elegant floral perfume with top notes of jasmine and rose, base of sandalwood. Long-lasting 8-hour wear.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1541643600914-78b084683601?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Fragrance" },
       { name: "Oud & Musk Perfume — 30ml", description: "Rich unisex fragrance blending warm oud with white musk. Travel-size 30ml spray.", price: "999", imageUrl: "https://images.unsplash.com/photo-1541643600914-78b084683601?q=80&w=800&auto=format&fit=crop", category: "Cosmetics", subcategory: "Fragrance" },
+      // ===== HANDBAGS - Casual =====
+      { name: "Canvas Tote Bag — Olive", description: "Sturdy canvas tote bag with inner zip pocket and cotton lining. Large enough for a laptop and daily essentials.", price: "999", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Tote Bags" },
+      { name: "Woven Straw Tote Bag", description: "Handwoven straw tote with faux leather handles and cotton lining. Summer-perfect, roomy design.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Tote Bags" },
+      { name: "Mini Sling Bag — Black", description: "Compact faux leather sling bag with adjustable strap and front zip pocket. Perfect for light outings.", price: "799", imageUrl: "https://images.unsplash.com/photo-1566150905458-1bf1fc113f0d?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Sling Bags" },
+      { name: "Crescent Sling Bag — Tan", description: "Trendy crescent-shaped sling bag in tan vegan leather with long chain strap. Minimalist and chic.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1591561954557-26941169b49e?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Sling Bags" },
+      { name: "Quilted Crossbody Bag", description: "Classic quilted crossbody bag in black with gold chain strap. Compact yet functional with 3 compartments.", price: "1499", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Sling Bags" },
+      // ===== HANDBAGS - Party & Ethnic =====
+      { name: "Embroidered Potli Bag — Red", description: "Traditional potli bag with zari embroidery and gold drawstring. Perfect for weddings and festive events.", price: "699", imageUrl: "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Potli Bags" },
+      { name: "Velvet Potli Bag — Emerald", description: "Rich emerald velvet potli bag with gold zardozi embroidery and tassels. Bridal and party essential.", price: "899", imageUrl: "https://images.unsplash.com/photo-1566150905458-1bf1fc113f0d?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Potli Bags" },
+      { name: "Beaded Evening Clutch", description: "Hand-beaded evening clutch with magnetic clasp and detachable chain. Statement piece for parties.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Clutches" },
+      { name: "Metallic Gold Clutch", description: "Sleek metallic gold clutch with fold-over flap and magnetic closure. Minimalist evening style.", price: "999", imageUrl: "https://images.unsplash.com/photo-1591561954557-26941169b49e?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Clutches" },
+      // ===== HANDBAGS - Everyday =====
+      { name: "Structured Work Bag — Tan", description: "Professional structured bag in faux leather with laptop compartment. Top handles and detachable shoulder strap.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1590874103328-eac38a683ce7?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Tote Bags" },
+      { name: "Mini Backpack — Blush Pink", description: "Cute mini backpack in blush pink vegan leather with gold hardware. Fits essentials and more.", price: "1799", imageUrl: "https://images.unsplash.com/photo-1548036328-c9fa89d128fa?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Backpacks" },
+      { name: "Woven Bamboo Clutch", description: "Artisanal bamboo handle clutch with woven body. Eco-friendly, lightweight, summer-ready.", price: "1099", imageUrl: "https://images.unsplash.com/photo-1566150905458-1bf1fc113f0d?q=80&w=800&auto=format&fit=crop", category: "Handbags", subcategory: "Clutches" },
+      // ===== ACCESSORIES - Hair =====
+      { name: "Pearl Hair Pin Set — 6 Pcs", description: "Set of 6 pearl-topped hair pins in gold and silver. Perfect for updos, braids, and boho hairstyles.", price: "299", imageUrl: "https://images.unsplash.com/photo-1557804506-669a67965ba0?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Hair Accessories" },
+      { name: "Floral Fabric Headband", description: "Padded floral fabric headband with knotted bow detail. Adds colour and texture to any look.", price: "249", imageUrl: "https://images.unsplash.com/photo-1580618672591-eb180b1a973f?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Hair Accessories" },
+      { name: "Scrunchie Set — 5 Pcs", description: "Pack of 5 satin scrunchies in jewel tones. Gentle on hair, luxe feel, no crease.", price: "349", imageUrl: "https://images.unsplash.com/photo-1557804506-669a67965ba0?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Hair Accessories" },
+      // ===== ACCESSORIES - Scarves =====
+      { name: "Silk Scarf — Floral Print", description: "Lightweight silk-blend scarf with vibrant floral print. Wear as a headscarf, neck tie, or bag accessory.", price: "799", imageUrl: "https://images.unsplash.com/photo-1601924638867-3a6de6b7a500?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Scarves" },
+      { name: "Pashmina Stole — Ivory", description: "Soft pashmina stole in ivory with delicate embroidered border. Wrap, drape or style as a dupatta.", price: "1299", imageUrl: "https://images.unsplash.com/photo-1601924638867-3a6de6b7a500?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Scarves" },
+      // ===== ACCESSORIES - Eyewear =====
+      { name: "Cat Eye Sunglasses — Black", description: "Classic cat-eye frame sunglasses in glossy black with UV400 polarised lenses. Timeless glamour.", price: "999", imageUrl: "https://images.unsplash.com/photo-1572635196237-14b3f281503f?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Sunglasses" },
+      { name: "Round Retro Sunglasses — Tortoise", description: "Retro round frame sunglasses in tortoise shell pattern with gradient brown lenses. Boho chic.", price: "799", imageUrl: "https://images.unsplash.com/photo-1508296695146-257a814070b4?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Sunglasses" },
+      { name: "Oversized Square Sunglasses", description: "Bold oversized square sunglasses in matte black with mirrored silver lenses. Maximum style impact.", price: "1199", imageUrl: "https://images.unsplash.com/photo-1572635196237-14b3f281503f?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Sunglasses" },
+      // ===== ACCESSORIES - Wrist & Head =====
+      { name: "Rose Gold Bracelet Watch", description: "Elegant bracelet-style watch in rose gold with mesh strap and minimalist dial. Water-resistant.", price: "2499", imageUrl: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Watches" },
+      { name: "Embroidered Belt — Ivory", description: "Handcrafted ivory embroidered belt with floral thread work. Cinch over kurtas, dresses, or blazers.", price: "599", imageUrl: "https://images.unsplash.com/photo-1553062407-98eeb64c6a62?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Belts" },
+      { name: "Embellished Hairband", description: "Embellished stretch hairband with crystal and pearl clusters. Doubles as a bracelet.", price: "449", imageUrl: "https://images.unsplash.com/photo-1580618672591-eb180b1a973f?q=80&w=800&auto=format&fit=crop", category: "Accessories", subcategory: "Hair Accessories" },
     ];
 
     for (const p of seedData) {

@@ -38,23 +38,6 @@ export function useAuth() {
     },
   });
 
-  const sendOtpMutation = useMutation({
-    mutationFn: async (data: { mobile: string }) => {
-      const res = await apiRequest("POST", "/api/auth/send-otp", data);
-      return await res.json();
-    },
-  });
-
-  const verifyOtpMutation = useMutation({
-    mutationFn: async (data: { mobile: string; otp: string }) => {
-      const res = await apiRequest("POST", "/api/auth/verify-otp", data);
-      return await res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
-    },
-  });
-
   const logoutMutation = useMutation({
     mutationFn: async () => {
       await apiRequest("POST", "/api/auth/logout");
@@ -70,8 +53,6 @@ export function useAuth() {
     isLoggedIn: !!user,
     login: loginMutation,
     register: registerMutation,
-    sendOtp: sendOtpMutation,
-    verifyOtp: verifyOtpMutation,
     logout: logoutMutation,
   };
 }
