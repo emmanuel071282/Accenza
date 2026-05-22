@@ -1,10 +1,10 @@
 import type { Order, OrderItem, User, Product } from "@shared/schema";
 import { sendSms } from "./sms";
 
-const ACCENZA_GSTIN = process.env.ACCENZA_GSTIN || "29AAAAA0000A1Z5";
-const ACCENZA_STATE = "Maharashtra";
-const ACCENZA_STATE_CODE = "27";
-const ACCENZA_ADDRESS = "Accenza, Mumbai, Maharashtra, India";
+const ACCENZA_GSTIN = "24ABGFB7929N1ZY";
+const ACCENZA_STATE = "Gujarat";
+const ACCENZA_STATE_CODE = "24";
+const ACCENZA_ADDRESS = "Accenza, Gujarat, India";
 const ACCENZA_EMAIL = "care@accenza.in";
 const ACCENZA_PHONE = "+91-9000000000";
 
