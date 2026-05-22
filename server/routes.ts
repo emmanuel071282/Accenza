@@ -3,9 +3,10 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, type InsertCampaign } from "@shared/schema";
+import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, otpVerifications, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, type InsertCampaign } from "@shared/schema";
 import bcrypt from "bcryptjs";
-import { sendSms } from "./sms";
+import { sendSms, sendWhatsApp } from "./sms";
+import { processStylistMessage, getDemoResponse, isAIStylistConfigured } from "./ai-stylist";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
 import { createRazorpayOrder, verifyPaymentSignature, getRazorpayKeyId, isRazorpayConfigured } from "./payment";
@@ -57,26 +58,107 @@ setInterval(() => {
     if (now > entry.resetAt) rateLimitStore.delete(key);
   }
 }, 30 * 60 * 1000);
+
+// 5 OTP send requests per IP per 15 minutes
+const otpSendLimiter = createRateLimiter(5, 15 * 60 * 1000);
+// 10 OTP verify attempts per IP per 15 minutes
+const otpVerifyLimiter = createRateLimiter(10, 15 * 60 * 1000);
 // ---------------------------------------------------------------------------
 
+function generateOtp(): string {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+async function saveOtp(mobile: string, otp: string, type: string) {
+  await db.delete(otpVerifications).where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
+  await db.insert(otpVerifications).values({
+    mobile, otp, type, verified: false,
+    expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+  });
+}
+
+async function getOtp(mobile: string, type: string) {
+  const rows = await db.select().from(otpVerifications)
+    .where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
+  return rows[0] ?? null;
+}
+
+async function markOtpVerified(mobile: string, type: string) {
+  await db.update(otpVerifications).set({ verified: true })
+    .where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
+}
+
+async function deleteOtp(mobile: string, type: string) {
+  await db.delete(otpVerifications).where(and(eq(otpVerifications.mobile, mobile), eq(otpVerifications.type, type)));
+}
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
 
+  app.post("/api/auth/send-registration-otp", otpSendLimiter, async (req, res) => {
+    try {
+      const schema = z.object({ mobile: z.string().regex(/^[6-9]\d{9}$/, "Invalid mobile number") });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
+      const { mobile } = parsed.data;
+
+      const existing = await storage.getUserByMobile(mobile);
+      if (existing) return res.status(409).json({ message: "An account with this mobile number already exists" });
+
+      const otp = generateOtp();
+      await saveOtp(mobile, otp, "registration");
+      const { simulated } = await sendSms(mobile, `Your ACCENZA registration OTP is ${otp}. Valid for 5 minutes. Do not share this code.`);
+      res.json({ message: "OTP sent successfully", ...(simulated ? { otp, simulated: true } : {}) });
+    } catch (error) {
+      console.error("Send registration OTP error:", error);
+      res.status(500).json({ message: "Failed to send OTP. Please try again." });
+    }
+  });
+
+  app.post("/api/auth/verify-registration-otp", otpVerifyLimiter, async (req, res) => {
+    try {
+      const schema = z.object({
+        mobile: z.string().regex(/^[6-9]\d{9}$/),
+        otp: z.string().regex(/^\d{4}$/),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
+      const { mobile, otp } = parsed.data;
+
+      const stored = await getOtp(mobile, "registration");
+      if (!stored) return res.status(400).json({ message: "OTP expired or not requested. Please request a new one." });
+      if (stored.expiresAt < new Date()) {
+        await deleteOtp(mobile, "registration");
+        return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+      }
+      if (stored.otp !== otp) return res.status(401).json({ message: "Invalid OTP. Please try again." });
+
+      await markOtpVerified(mobile, "registration");
+      res.json({ message: "Mobile number verified successfully" });
+    } catch (error) {
+      console.error("Verify registration OTP error:", error);
+      res.status(500).json({ message: "Something went wrong. Please try again." });
+    }
+  });
+
   app.post("/api/auth/register", async (req, res) => {
     try {
       const parsed = registerSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0].message });
-      }
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
       const { name, mobile, email, pin, birthday } = parsed.data;
 
-      const existing = await storage.getUserByMobile(mobile);
-      if (existing) {
-        return res.status(409).json({ message: "An account with this mobile number already exists" });
+      const storedOtp = await getOtp(mobile, "registration");
+      if (!storedOtp || !storedOtp.verified) return res.status(400).json({ message: "Mobile number not verified. Please verify with OTP first." });
+      if (storedOtp.expiresAt < new Date()) {
+        await deleteOtp(mobile, "registration");
+        return res.status(400).json({ message: "Verification expired. Please start the registration again." });
       }
+      await deleteOtp(mobile, "registration");
+
+      const existing = await storage.getUserByMobile(mobile);
+      if (existing) return res.status(409).json({ message: "An account with this mobile number already exists" });
 
       const hashedPin = await bcrypt.hash(pin, 10);
       const user = await storage.createUser({ name, mobile, email, pin: hashedPin, birthday });
@@ -115,6 +197,55 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/auth/send-otp", otpSendLimiter, async (req, res) => {
+    try {
+      const schema = z.object({ mobile: z.string().regex(/^[6-9]\d{9}$/, "Invalid mobile number") });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
+      const { mobile } = parsed.data;
+
+      const user = await storage.getUserByMobile(mobile);
+      if (!user) return res.status(404).json({ message: "No account found with this mobile number" });
+
+      const otp = generateOtp();
+      await saveOtp(mobile, otp, "login");
+      const { simulated } = await sendSms(mobile, `Your ACCENZA login OTP is ${otp}. Valid for 5 minutes. Do not share this code.`);
+      res.json({ message: "OTP sent successfully", ...(simulated ? { otp, simulated: true } : {}) });
+    } catch (error) {
+      console.error("Send OTP error:", error);
+      res.status(500).json({ message: "Failed to send OTP. Please try again." });
+    }
+  });
+
+  app.post("/api/auth/verify-otp", otpVerifyLimiter, async (req, res) => {
+    try {
+      const schema = z.object({
+        mobile: z.string().regex(/^[6-9]\d{9}$/),
+        otp: z.string().regex(/^\d{4}$/),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
+      const { mobile, otp } = parsed.data;
+
+      const stored = await getOtp(mobile, "login");
+      if (!stored) return res.status(400).json({ message: "OTP expired or not requested. Please request a new one." });
+      if (stored.expiresAt < new Date()) {
+        await deleteOtp(mobile, "login");
+        return res.status(400).json({ message: "OTP has expired. Please request a new one." });
+      }
+      if (stored.otp !== otp) return res.status(401).json({ message: "Invalid OTP. Please try again." });
+
+      await deleteOtp(mobile, "login");
+      const user = await storage.getUserByMobile(mobile);
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      req.session.userId = user.id;
+      res.json({ id: user.id, name: user.name, mobile: user.mobile, email: user.email, birthday: user.birthday, role: user.role });
+    } catch (error) {
+      console.error("Verify OTP error:", error);
+      res.status(500).json({ message: "Something went wrong. Please try again." });
+    }
+  });
 
   app.get("/api/auth/me", async (req, res) => {
     if (!req.session.userId) {
@@ -1175,6 +1306,59 @@ export async function registerRoutes(
     res.send(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>`);
   });
 
+
+  // ---------------------------------------------------------------------------
+  // WhatsApp AI Beauty & Style Advisor
+  // ---------------------------------------------------------------------------
+  app.post("/api/webhooks/whatsapp", async (req, res) => {
+    res.set("Content-Type", "text/xml");
+    try {
+      const { Body: messageBody, From: from } = req.body;
+      if (!messageBody || !from) return res.send("<Response></Response>");
+
+      const mobile = from.replace("whatsapp:+91", "").replace("whatsapp:+", "");
+      const userMessage = messageBody.trim();
+
+      console.log(`[AI Stylist] Message from +91${mobile}: ${userMessage.substring(0, 100)}`);
+
+      await storage.addStylistMessage({ mobile, role: "user", message: userMessage, productIds: null });
+
+      let reply: string;
+      let productIds: number[] = [];
+
+      if (isAIStylistConfigured()) {
+        const history = await storage.getStylistConversation(mobile);
+        const products = await storage.getProducts();
+        const result = await processStylistMessage(mobile, userMessage, history, products);
+        reply = result.reply;
+        productIds = result.productIds;
+      } else {
+        reply = getDemoResponse(userMessage);
+      }
+
+      await storage.addStylistMessage({
+        mobile, role: "assistant", message: reply,
+        productIds: productIds.length > 0 ? productIds.join(",") : null,
+      });
+
+      await sendWhatsApp(mobile, reply);
+      console.log(`[AI Stylist] Replied to +91${mobile} (${productIds.length} products recommended)`);
+      res.send("<Response></Response>");
+    } catch (error) {
+      console.error("[AI Stylist] Webhook error:", error);
+      res.send("<Response></Response>");
+    }
+  });
+
+  app.get("/api/admin/stylist/stats", requireAdmin, async (_req, res) => {
+    const stats = await storage.getStylistStats();
+    res.json(stats);
+  });
+
+  app.get("/api/admin/stylist/conversations", requireAdmin, async (_req, res) => {
+    const allMessages = await storage.getStylistConversation("", 200);
+    res.json(allMessages);
+  });
 
   await seedDatabase();
 
