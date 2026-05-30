@@ -1576,7 +1576,8 @@ async function seedAdminUser() {
   const adminMobiles = [
     { mobile: "9377637787", name: "Admin" },
     { mobile: "7778988998", name: "Admin 2" },
-    ...(process.env.ADMIN_MOBILE && !["9377637787", "7778988998"].includes(process.env.ADMIN_MOBILE)
+    { mobile: "9898407655", name: "Admin 3" },
+    ...(process.env.ADMIN_MOBILE && !["9377637787", "7778988998", "9898407655"].includes(process.env.ADMIN_MOBILE)
       ? [{ mobile: process.env.ADMIN_MOBILE, name: "Admin" }]
       : []),
   ];
