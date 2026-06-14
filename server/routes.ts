@@ -1095,7 +1095,6 @@ export async function registerRoutes(
         const couriers = await checkServiceability("380054", pincode);
         if (couriers.length > 0) {
           const fastest = couriers.reduce((a, b) => a.estimatedDays < b.estimatedDays ? a : b);
-          const cheapest = couriers.reduce((a, b) => a.rate < b.rate ? a : b);
           return res.json({
             serviceable: true,
             estimatedDays: `${fastest.estimatedDays}-${fastest.estimatedDays + 2}`,
@@ -1103,12 +1102,9 @@ export async function registerRoutes(
             courierOptions: couriers.length,
           });
         }
-        return res.json({
-          serviceable: false,
-          message: "Sorry, we don't deliver to this pincode yet. We're expanding soon!",
-        });
+        // 0 couriers — fall through to static prefix check
       } catch {
-        // Fall through to static check
+        // API error — fall through to static check
       }
     }
 
