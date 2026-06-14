@@ -33,6 +33,7 @@ const allowlist = [
 ];
 
 async function buildAll() {
+  process.env.NODE_ENV = "production";
   await rm("dist", { recursive: true, force: true });
 
   console.log("building client...");
