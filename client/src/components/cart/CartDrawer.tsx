@@ -1,12 +1,9 @@
 import { useCart } from "@/hooks/use-cart";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Button } from "@/components/ui/button";
 import { Minus, Plus, Trash2, ShoppingBag } from "lucide-react";
-import { useLocation } from "wouter";
 
 export function CartDrawer() {
   const { isOpen, setIsOpen, items, removeItem, updateQuantity, cartTotal } = useCart();
-  const [, navigate] = useLocation();
 
   return (
     <Sheet open={isOpen} onOpenChange={setIsOpen}>
@@ -113,7 +110,6 @@ export function CartDrawer() {
                 href="/checkout"
                 data-testid="button-checkout"
                 className="w-full block text-center rounded-none py-4 text-sm uppercase tracking-widest font-semibold bg-foreground text-background hover:opacity-90 transition-opacity"
-                onClick={() => setIsOpen(false)}
               >
                 Continue to Checkout
               </a>
