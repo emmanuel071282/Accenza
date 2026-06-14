@@ -109,13 +109,14 @@ export function CartDrawer() {
               </div>
             </div>
             
-              <Button
+              <a
+                href="/checkout"
                 data-testid="button-checkout"
-                className="w-full rounded-none py-6 text-sm uppercase tracking-widest font-semibold"
-                onClick={() => { setIsOpen(false); window.location.href = "/checkout"; }}
+                className="w-full block text-center rounded-none py-4 text-sm uppercase tracking-widest font-semibold bg-foreground text-background hover:opacity-90 transition-opacity"
+                onClick={() => setIsOpen(false)}
               >
                 Continue to Checkout
-              </Button>
+              </a>
             <p className="text-[10px] text-center text-muted-foreground">
               We accept Visa, Mastercard, RuPay, UPI, and Net Banking.
             </p>
