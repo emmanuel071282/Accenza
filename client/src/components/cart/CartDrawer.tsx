@@ -112,7 +112,7 @@ export function CartDrawer() {
               <Button
                 data-testid="button-checkout"
                 className="w-full rounded-none py-6 text-sm uppercase tracking-widest font-semibold"
-                onClick={() => { setIsOpen(false); navigate("/checkout"); }}
+                onClick={() => { setIsOpen(false); window.location.href = "/checkout"; }}
               >
                 Continue to Checkout
               </Button>
