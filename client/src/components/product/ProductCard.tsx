@@ -35,10 +35,22 @@ export function ProductCard({ product }: ProductCardProps) {
           src={product.imageUrl}
           alt={product.name}
           width={400} height={533}
-          className="object-cover w-full h-full img-hover-zoom"
+          className={cn(
+            "object-cover w-full h-full img-hover-zoom",
+            (product as any).imageUrl2 && "transition-opacity duration-500 group-hover:opacity-0"
+          )}
           loading="lazy"
         />
-        
+        {(product as any).imageUrl2 && (
+          <img
+            src={(product as any).imageUrl2}
+            alt={product.name}
+            width={400} height={533}
+            className="absolute inset-0 object-cover w-full h-full opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+            loading="lazy"
+          />
+        )}
+
         <button
           data-testid={`button-wishlist-${product.id}`}
           onClick={(e) => { e.stopPropagation(); toggleItem(product); }}

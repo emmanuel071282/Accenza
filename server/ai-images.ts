@@ -53,13 +53,58 @@ const BODY_PLACEMENT: Record<string, string> = {
   "Hair Accessories": "beautiful Indian woman with the hair accessory in her hair, white background, professional studio lighting",
 };
 
+// How the product should be displayed in the "product shot" (stand / box / bust)
+// per jewellery & accessory presentation standards. Keyed by subcategory.
+const PRODUCT_DISPLAY: Record<string, string> = {
+  // Jewellery - Earrings
+  "Studs": "displayed on an elegant earring display stand",
+  "Danglers": "hanging on an elegant earring display stand",
+  "Hoops": "hanging on an elegant earring display stand",
+  "Jhumkas": "hanging on an elegant earring display stand",
+  "Chandbalis": "hanging on an elegant earring display stand",
+  "Earrings": "displayed on an elegant earring display stand",
+  // Jewellery - Necklaces
+  "Necklaces": "displayed on a velvet necklace bust display",
+  "Chokers": "displayed on a velvet necklace bust display",
+  "Layered Sets": "displayed on a velvet necklace bust display",
+  "Mangalsutra": "displayed on a velvet necklace bust display",
+  // Jewellery - Bangles & Bracelets
+  "Bangles": "displayed on a bangle holder stand",
+  "Bracelets": "displayed on a velvet bracelet display ramp",
+  "Kada": "displayed on a bangle holder stand",
+  // Jewellery - Rings
+  "Rings": "displayed on an elegant ring display stand",
+  "Thumb Rings": "displayed on an elegant ring display stand",
+  "Midi Rings": "displayed on an elegant ring display stand",
+  // Jewellery - Sets & Others
+  "Jewellery Sets": "arranged elegantly in an open jewellery box",
+  "Maang Tikka": "displayed on a velvet jewellery display",
+  "Nose Pins": "displayed on a small velvet jewellery display",
+  "Anklets": "displayed on a velvet jewellery display ramp",
+  "Brooches": "displayed on a velvet jewellery pad",
+  // Cosmetics
+  "Lip Colour": "standing upright on a clean reflective surface",
+  "Foundation": "standing upright on a clean reflective surface",
+  "Fragrance": "standing upright on a clean reflective surface",
+  // Handbags
+  "Tote Bags": "displayed standing on a clean surface",
+  "Clutches": "displayed standing on a clean surface",
+  "Sling Bags": "displayed standing on a clean surface",
+  // Accessories
+  "Watches": "displayed on a watch display stand",
+  "Sunglasses": "displayed on a clean surface",
+};
+
+const PRESERVE = "CRITICAL: keep the product EXACTLY as it appears in the reference image — identical design, shape, colour, gemstones, metal tone, engraving and every detail. Do NOT redesign, restyle, recolour or invent a different product. Only change the background and presentation.";
+
 function getModelPrompt(subcategory: string, productName: string): string {
   const base = BODY_PLACEMENT[subcategory] || `beautiful Indian woman with the ${productName}, white background, professional studio lighting`;
-  return `Photorealistic image: ${base}. The product should be clearly visible and look exactly like the reference. High quality fashion photography.`;
+  return `Photorealistic fashion photograph: ${base}. ${PRESERVE} The product must look identical to the reference. High quality fashion photography.`;
 }
 
-function getProductPrompt(productName: string): string {
-  return `Professional product photography of the ${productName} on a pure white background. Studio lighting, sharp focus, no shadows, clean minimal look. The product should be centered and fill most of the frame. High quality e-commerce product shot.`;
+function getProductPrompt(subcategory: string, productName: string): string {
+  const display = PRODUCT_DISPLAY[subcategory] || "displayed on an elegant display stand";
+  return `Professional e-commerce product photograph of the ${productName} ${display}, on a clean soft neutral background. Studio lighting, sharp focus, premium luxury catalogue look, product centered and filling most of the frame. ${PRESERVE}`;
 }
 
 async function callOpenAIImageEdit(imageBase64: string, mimeType: string, prompt: string): Promise<string | null> {
@@ -111,7 +156,7 @@ export async function generateProductImages(
   productName: string
 ): Promise<{ productShot: string | null; modelShot: string | null }> {
   const [productShot, modelShot] = await Promise.all([
-    callOpenAIImageEdit(imageBase64, mimeType, getProductPrompt(productName)),
+    callOpenAIImageEdit(imageBase64, mimeType, getProductPrompt(subcategory, productName)),
     callOpenAIImageEdit(imageBase64, mimeType, getModelPrompt(subcategory, productName)),
   ]);
   return { productShot, modelShot };

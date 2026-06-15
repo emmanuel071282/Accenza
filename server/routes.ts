@@ -437,6 +437,43 @@ export async function registerRoutes(
     }
   });
 
+  // Bulk create products from a CSV import (each row -> new article)
+  app.post("/api/admin/products/bulk", requireAdmin, async (req, res) => {
+    try {
+      const rows = req.body?.products;
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ message: "No product rows provided" });
+      }
+      if (rows.length > 1000) {
+        return res.status(400).json({ message: "Too many rows (max 1000 per upload)" });
+      }
+
+      let created = 0;
+      const errors: { row: number; message: string }[] = [];
+
+      for (let i = 0; i < rows.length; i++) {
+        const parsed = insertProductSchema.safeParse(rows[i]);
+        if (!parsed.success) {
+          errors.push({ row: i + 1, message: parsed.error.errors[0].message });
+          continue;
+        }
+        try {
+          const product = await storage.createProduct(parsed.data);
+          const barcode = generateEAN13Barcode(product.id);
+          await storage.updateProductBarcode(product.id, barcode);
+          created++;
+        } catch (err: any) {
+          errors.push({ row: i + 1, message: err?.message || "Failed to create" });
+        }
+      }
+
+      res.json({ created, failed: errors.length, errors: errors.slice(0, 20) });
+    } catch (error) {
+      console.error("Bulk product import error:", error);
+      res.status(500).json({ message: "Bulk import failed" });
+    }
+  });
+
   // AI image generation for product photos
   app.post("/api/admin/ai-images/generate", requireAdmin, async (req, res) => {
     try {

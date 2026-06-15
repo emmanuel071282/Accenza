@@ -30,6 +30,12 @@ export default function ProductPage() {
   
   const [isAdded, setIsAdded] = useState(false);
   const [selectedSize, setSelectedSize] = useState<string>("");
+  const [activeImage, setActiveImage] = useState<string>("");
+
+  const galleryImages = product
+    ? [product.imageUrl, (product as any).imageUrl2].filter((u): u is string => !!u)
+    : [];
+  const mainImage = activeImage || galleryImages[0] || product?.imageUrl;
 
   usePageMeta({
     title: product ? `${product.name} — ACCENZA` : "ACCENZA - Jewellery, Cosmetics & Accessories",
@@ -76,16 +82,37 @@ export default function ProductPage() {
         
         <div className="flex flex-col lg:flex-row gap-12 lg:gap-20 mb-24">
           
-          <div className="w-full lg:w-3/5 bg-secondary relative aspect-[3/4] md:aspect-[4/5] lg:aspect-auto lg:h-[80vh]">
+          <div className="w-full lg:w-3/5">
             {isLoading ? (
-              <Skeleton className="w-full h-full rounded-none" />
+              <Skeleton className="w-full aspect-[3/4] md:aspect-[4/5] lg:h-[80vh] rounded-none" />
             ) : (
-              <img
-                src={product?.imageUrl}
-                alt={product?.name}
-                width={800} height={1067}
-                className="w-full h-full object-cover"
-              />
+              <div className="flex flex-col-reverse sm:flex-row gap-3">
+                {galleryImages.length > 1 && (
+                  <div className="flex sm:flex-col gap-3">
+                    {galleryImages.map((img, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setActiveImage(img)}
+                        aria-label={`View image ${i + 1}`}
+                        className={cn(
+                          "w-16 h-20 sm:w-20 sm:h-24 bg-secondary overflow-hidden border-2 transition-colors shrink-0",
+                          mainImage === img ? "border-foreground" : "border-transparent hover:border-border"
+                        )}
+                      >
+                        <img src={img} alt={`${product?.name} ${i + 1}`} className="w-full h-full object-cover" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex-1 bg-secondary relative aspect-[3/4] md:aspect-[4/5] lg:aspect-auto lg:h-[80vh]">
+                  <img
+                    src={mainImage}
+                    alt={product?.name}
+                    width={800} height={1067}
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              </div>
             )}
           </div>
 

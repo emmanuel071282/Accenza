@@ -2,12 +2,44 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import AdminLayout from "./AdminLayout";
-import { Loader2, Plus, X, Printer, Barcode, Camera, Wand2, Check, ImageIcon } from "lucide-react";
+import { Loader2, Plus, X, Printer, Barcode, Camera, Wand2, Check, ImageIcon, Upload, Download } from "lucide-react";
 import type { Product } from "@shared/schema";
 import { SUBCATEGORIES, getAllSubcategories, getSizesForProduct } from "@shared/schema";
 import JsBarcode from "jsbarcode";
 
 const CATEGORIES = ["Jewellery", "Cosmetics", "Handbags", "Accessories"];
+
+const CSV_HEADERS = ["name", "description", "price", "costPrice", "category", "subcategory", "imageUrl", "imageUrl2", "sizes", "barcode"];
+
+function csvEscape(v: unknown): string {
+  const s = String(v ?? "");
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// Minimal RFC-4180-ish CSV parser that handles quoted fields with commas / newlines.
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let cur: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { cur.push(field); field = ""; }
+      else if (c === "\n") { cur.push(field); rows.push(cur); cur = []; field = ""; }
+      else if (c === "\r") { /* ignore */ }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || cur.length > 0) { cur.push(field); rows.push(cur); }
+  return rows;
+}
 
 function BarcodeModal({ product, onClose }: { product: Product; onClose: () => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -86,6 +118,8 @@ function BarcodeModal({ product, onClose }: { product: Product; onClose: () => v
   );
 }
 
+type Upload = { id: string; preview: string; mime: string };
+
 export default function ArticlesPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [barcodeProduct, setBarcodeProduct] = useState<Product | null>(null);
@@ -94,36 +128,45 @@ export default function ArticlesPage() {
     description: "",
     price: "",
     costPrice: "",
-    imageUrl: "",
     category: "",
     subcategory: "",
   });
   const [autoSizes, setAutoSizes] = useState<string[]>([]);
   const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
 
-  // AI image generation state
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadedPreview, setUploadedPreview] = useState<string | null>(null);
-  const [aiGenerating, setAiGenerating] = useState(false);
+  // Image selection state — up to 2 uploaded + up to 2 AI generated; admin picks 2.
+  const [uploads, setUploads] = useState<Upload[]>([]);
   const [aiResults, setAiResults] = useState<{ productShot: string | null; modelShot: string | null } | null>(null);
-  const [selectedAiImage, setSelectedAiImage] = useState<"product" | "model" | null>(null);
-  const [useUrlMode, setUseUrlMode] = useState(false);
+  const [aiGenerating, setAiGenerating] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [selectedImages, setSelectedImages] = useState<string[]>([]); // ordered: [primary, secondary]
+  const [useUrlMode, setUseUrlMode] = useState(false);
+  const [urlInputs, setUrlInputs] = useState({ a: "", b: "" });
+  const [savingImages, setSavingImages] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // CSV import state
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ["/api/admin/products"],
   });
 
+  const invalidateProducts = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/products"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/products/category/:category"] });
+  };
+
   const createMutation = useMutation({
-    mutationFn: async (data: typeof form & { sizes: string[] }) => {
+    mutationFn: async (data: Record<string, unknown>) => {
       const res = await apiRequest("POST", "/api/admin/products", data);
       return res.json();
     },
     onSuccess: (newProduct: Product) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/products"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/products/category/:category"] });
+      invalidateProducts();
       setBarcodeProduct(newProduct);
       setShowAddForm(false);
       resetForm();
@@ -131,14 +174,14 @@ export default function ArticlesPage() {
   });
 
   const resetForm = () => {
-    setForm({ name: "", description: "", price: "", costPrice: "", imageUrl: "", category: "", subcategory: "" });
+    setForm({ name: "", description: "", price: "", costPrice: "", category: "", subcategory: "" });
     setAutoSizes([]);
     setSelectedSizes([]);
-    setUploadedFile(null);
-    setUploadedPreview(null);
+    setUploads([]);
     setAiResults(null);
-    setSelectedAiImage(null);
+    setSelectedImages([]);
     setUseUrlMode(false);
+    setUrlInputs({ a: "", b: "" });
     setAiError(null);
   };
 
@@ -152,7 +195,7 @@ export default function ArticlesPage() {
     setForm((prev) => ({ ...prev, subcategory }));
     const sizes = getSizesForProduct(form.category, subcategory);
     setAutoSizes(sizes);
-    setSelectedSizes(sizes); // suggested default — admin can toggle any off
+    setSelectedSizes(sizes); // suggested default — admin can toggle off
   };
 
   const toggleSize = (size: string) => {
@@ -166,26 +209,41 @@ export default function ArticlesPage() {
     : [];
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadedFile(file);
-    setAiResults(null);
-    setSelectedAiImage(null);
+    const files = Array.from(e.target.files || []);
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const preview = ev.target?.result as string;
+        setUploads((prev) =>
+          prev.length >= 2
+            ? prev
+            : [...prev, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, preview, mime: file.type }]
+        );
+      };
+      reader.readAsDataURL(file);
+    });
     setAiError(null);
-    const reader = new FileReader();
-    reader.onload = (ev) => setUploadedPreview(ev.target?.result as string);
-    reader.readAsDataURL(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const removeUpload = (id: string) => {
+    setUploads((prev) => {
+      const removed = prev.find((u) => u.id === id);
+      if (removed) setSelectedImages((sel) => sel.filter((s) => s !== removed.preview));
+      return prev.filter((u) => u.id !== id);
+    });
   };
 
   const handleAIGenerate = async () => {
-    if (!uploadedFile || !uploadedPreview || !form.category || !form.subcategory) return;
+    const base = uploads[0];
+    if (!base || !form.category || !form.subcategory) return;
     setAiGenerating(true);
     setAiResults(null);
     setAiError(null);
     try {
       const res = await apiRequest("POST", "/api/admin/ai-images/generate", {
-        imageBase64: uploadedPreview,
-        mimeType: uploadedFile.type,
+        imageBase64: base.preview,
+        mimeType: base.mime,
         category: form.category,
         subcategory: form.subcategory,
         productName: form.name || form.subcategory,
@@ -197,7 +255,6 @@ export default function ArticlesPage() {
       }
       setAiResults(data);
     } catch (err) {
-      // apiRequest throws "<status>: <body>" on non-OK responses; surface the real reason.
       const msg = err instanceof Error ? err.message : "";
       if (msg.includes("503")) {
         setAiError("AI image generation is not configured on the server (OPENAI_API_KEY missing).");
@@ -211,44 +268,197 @@ export default function ArticlesPage() {
     }
   };
 
-  const handleSelectAiImage = (type: "product" | "model") => {
-    setSelectedAiImage(type);
-    const url = type === "product" ? aiResults?.productShot : aiResults?.modelShot;
-    if (url) setForm((f) => ({ ...f, imageUrl: url }));
+  const toggleImageSelect = (url: string) => {
+    setSelectedImages((prev) => {
+      if (prev.includes(url)) return prev.filter((u) => u !== url);
+      if (prev.length >= 2) return prev; // cap at 2 — deselect one first
+      return [...prev, url];
+    });
   };
 
-  const canGenerate = !!uploadedFile && !!form.category && !!form.subcategory;
+  const canGenerate = uploads.length >= 1 && !!form.category && !!form.subcategory;
+
+  // Candidate images shown for selection: uploaded photos + AI results.
+  const candidates: { url: string; label: string }[] = [
+    ...uploads.map((u, i) => ({ url: u.preview, label: `Uploaded ${i + 1}` })),
+    ...(aiResults?.productShot ? [{ url: aiResults.productShot, label: "AI · Product" }] : []),
+    ...(aiResults?.modelShot ? [{ url: aiResults.modelShot, label: "AI · Model" }] : []),
+  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    let imageUrl = form.imageUrl;
-    // If it's a base64 image, save it to disk first
-    if (imageUrl.startsWith("data:")) {
-      try {
-        const saveRes = await apiRequest("POST", "/api/admin/ai-images/save", { imageBase64: imageUrl });
-        const saved = await saveRes.json();
-        imageUrl = saved.url;
-      } catch (err) {
-        console.error("Failed to save AI image:", err);
-      }
+    let imgs: string[] = useUrlMode
+      ? [urlInputs.a, urlInputs.b].map((s) => s.trim()).filter(Boolean)
+      : selectedImages;
+
+    if (imgs.length === 0) {
+      setAiError(useUrlMode ? "Enter at least one image URL." : "Select at least one image (you can pick up to two).");
+      return;
     }
-    createMutation.mutate({ ...form, imageUrl, sizes: selectedSizes });
+
+    setSavingImages(true);
+    try {
+      // Persist any base64 (uploaded / AI) images to disk; pass through plain URLs.
+      const finalUrls: string[] = [];
+      for (const img of imgs) {
+        if (img.startsWith("data:")) {
+          try {
+            const saveRes = await apiRequest("POST", "/api/admin/ai-images/save", { imageBase64: img });
+            const saved = await saveRes.json();
+            finalUrls.push(saved.url);
+          } catch (err) {
+            console.error("Failed to save image:", err);
+          }
+        } else {
+          finalUrls.push(img);
+        }
+      }
+      if (finalUrls.length === 0) {
+        setAiError("Could not save the selected images. Please try again.");
+        return;
+      }
+      createMutation.mutate({
+        ...form,
+        imageUrl: finalUrls[0],
+        imageUrl2: finalUrls[1] || "",
+        sizes: selectedSizes,
+      });
+    } finally {
+      setSavingImages(false);
+    }
+  };
+
+  // ── CSV export ──
+  const exportCsv = () => {
+    if (!products || products.length === 0) return;
+    const lines = [CSV_HEADERS.join(",")];
+    for (const p of products) {
+      lines.push([
+        p.name,
+        p.description,
+        p.price,
+        p.costPrice ?? "0",
+        p.category,
+        p.subcategory ?? "",
+        p.imageUrl,
+        (p as any).imageUrl2 ?? "",
+        (p.sizes || []).join("|"),
+        p.barcode ?? "",
+      ].map(csvEscape).join(","));
+    }
+    const csv = lines.join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `accenza-articles-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── CSV import ──
+  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text).filter((r) => r.some((c) => c.trim() !== ""));
+      if (rows.length < 2) {
+        setImportResult("CSV is empty or has no data rows.");
+        return;
+      }
+      const headers = rows[0].map((h) => h.trim().toLowerCase());
+      const idx = (name: string) => headers.indexOf(name.toLowerCase());
+      const iName = idx("name"), iDesc = idx("description"), iPrice = idx("price"), iCost = idx("costPrice"),
+        iCat = idx("category"), iSub = idx("subcategory"), iImg = idx("imageUrl"), iImg2 = idx("imageUrl2"), iSizes = idx("sizes");
+
+      if (iName < 0 || iPrice < 0 || iCat < 0 || iImg < 0) {
+        setImportResult("CSV must include at least these columns: name, price, category, imageUrl.");
+        return;
+      }
+
+      const payload = rows.slice(1)
+        .filter((r) => (r[iName] || "").trim())
+        .map((r) => ({
+          name: (r[iName] || "").trim(),
+          description: iDesc >= 0 ? (r[iDesc] || "").trim() : "",
+          price: (r[iPrice] || "").trim(),
+          costPrice: iCost >= 0 ? ((r[iCost] || "").trim() || "0") : "0",
+          category: (r[iCat] || "").trim(),
+          subcategory: iSub >= 0 ? (r[iSub] || "").trim() : "",
+          imageUrl: (r[iImg] || "").trim(),
+          imageUrl2: iImg2 >= 0 ? (r[iImg2] || "").trim() : "",
+          sizes: iSizes >= 0 ? (r[iSizes] || "").split("|").map((s) => s.trim()).filter(Boolean) : [],
+        }));
+
+      if (payload.length === 0) {
+        setImportResult("No valid rows found in the CSV.");
+        return;
+      }
+
+      const res = await apiRequest("POST", "/api/admin/products/bulk", { products: payload });
+      const data = await res.json();
+      invalidateProducts();
+      setImportResult(`Imported ${data.created} article(s).${data.failed ? ` ${data.failed} row(s) failed.` : ""}`);
+    } catch (err) {
+      setImportResult("Import failed. Please check the CSV format and try again.");
+    } finally {
+      setImporting(false);
+      if (csvInputRef.current) csvInputRef.current.value = "";
+    }
   };
 
   return (
     <AdminLayout>
-      <div className="mb-8 flex items-end justify-between">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Articles</h1>
           <p className="text-muted-foreground text-sm mt-1">Product catalogue with EAN-13 barcodes</p>
         </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="flex items-center gap-2 bg-foreground text-background px-4 py-2 text-xs uppercase tracking-widest font-semibold hover:opacity-90 transition-opacity"
-        >
-          <Plus className="w-4 h-4" /> Add Article
-        </button>
+        <div className="flex items-center gap-2">
+          <input
+            ref={csvInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={handleCsvUpload}
+          />
+          <button
+            onClick={() => csvInputRef.current?.click()}
+            disabled={importing}
+            className="flex items-center gap-2 border border-border px-3 py-2 text-xs uppercase tracking-widest font-semibold hover:bg-secondary transition-colors disabled:opacity-50"
+          >
+            {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            Import CSV
+          </button>
+          <button
+            onClick={exportCsv}
+            disabled={!products || products.length === 0}
+            className="flex items-center gap-2 border border-border px-3 py-2 text-xs uppercase tracking-widest font-semibold hover:bg-secondary transition-colors disabled:opacity-50"
+          >
+            <Download className="w-4 h-4" /> Export CSV
+          </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="flex items-center gap-2 bg-foreground text-background px-4 py-2 text-xs uppercase tracking-widest font-semibold hover:opacity-90 transition-opacity"
+          >
+            <Plus className="w-4 h-4" /> Add Article
+          </button>
+        </div>
       </div>
+
+      {importResult && (
+        <div className="mb-6 text-sm border border-border bg-secondary/40 px-4 py-3 flex items-center justify-between gap-3">
+          <span>{importResult}</span>
+          <button onClick={() => setImportResult(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {showAddForm && (
         <form onSubmit={handleSubmit} className="bg-background border border-border p-6 mb-8 space-y-4">
@@ -359,88 +569,85 @@ export default function ArticlesPage() {
             </div>
           )}
 
-          {/* ── Product Image Section ── */}
+          {/* ── Product Images Section ── */}
           <div className="border border-border p-4 space-y-4">
             <div className="flex items-center justify-between">
-              <label className="block text-[10px] uppercase tracking-widest font-semibold">Product Image</label>
+              <label className="block text-[10px] uppercase tracking-widest font-semibold">
+                Product Images <span className="text-muted-foreground font-normal normal-case tracking-normal">(select up to 2)</span>
+              </label>
               <button
                 type="button"
-                onClick={() => setUseUrlMode((v) => !v)}
+                onClick={() => { setUseUrlMode((v) => !v); setAiError(null); }}
                 className="text-[10px] uppercase tracking-widest text-muted-foreground hover:text-foreground underline underline-offset-2"
               >
-                {useUrlMode ? "Use Camera / Upload" : "Or enter URL manually"}
+                {useUrlMode ? "Use Camera / Upload + AI" : "Or enter URLs manually"}
               </button>
             </div>
 
             {useUrlMode ? (
-              /* URL input mode */
-              <div>
-                <input
-                  type="url"
-                  value={form.imageUrl}
-                  onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
-                  className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
-                  placeholder="https://images.unsplash.com/..."
-                  required
-                />
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-[10px] uppercase tracking-widest font-semibold mb-1 text-muted-foreground">Image URL 1 (primary)</label>
+                  <input
+                    type="url"
+                    value={urlInputs.a}
+                    onChange={(e) => setUrlInputs({ ...urlInputs, a: e.target.value })}
+                    className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
+                    placeholder="https://images.unsplash.com/..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase tracking-widest font-semibold mb-1 text-muted-foreground">Image URL 2 (optional)</label>
+                  <input
+                    type="url"
+                    value={urlInputs.b}
+                    onChange={(e) => setUrlInputs({ ...urlInputs, b: e.target.value })}
+                    className="w-full border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-foreground"
+                    placeholder="https://images.unsplash.com/..."
+                  />
+                </div>
               </div>
             ) : (
-              /* Camera / AI mode */
               <div className="space-y-4">
-                {/* Upload button */}
-                <div className="flex items-center gap-3">
+                {/* Upload controls */}
+                <div className="flex items-center gap-3 flex-wrap">
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
-                    capture="environment"
+                    multiple
                     className="hidden"
                     onChange={handleFileChange}
                   />
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-2 border border-border px-4 py-2 text-xs uppercase tracking-widest font-semibold hover:bg-secondary transition-colors"
+                    disabled={uploads.length >= 2}
+                    className="flex items-center gap-2 border border-border px-4 py-2 text-xs uppercase tracking-widest font-semibold hover:bg-secondary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Camera className="w-4 h-4" />
-                    {uploadedFile ? "Change Photo" : "Upload Photo"}
+                    {uploads.length === 0 ? "Upload Photos" : uploads.length >= 2 ? "Max 2 photos" : "Add Another Photo"}
                   </button>
-                  {uploadedFile && (
-                    <span className="text-xs text-muted-foreground truncate max-w-[200px]">{uploadedFile.name}</span>
-                  )}
+                  <span className="text-xs text-muted-foreground">{uploads.length}/2 uploaded</span>
                 </div>
 
-                {/* Thumbnail preview */}
-                {uploadedPreview && (
-                  <div className="flex items-start gap-3">
-                    <div className="w-20 h-20 border border-border overflow-hidden flex-shrink-0">
-                      <img src={uploadedPreview} alt="Uploaded" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="flex-1 text-xs text-muted-foreground pt-1">
-                      Photo uploaded. Select category &amp; subcategory, then generate.
-                    </div>
-                  </div>
-                )}
-
-                {/* Generate with AI button */}
-                <div className="relative inline-block">
+                {/* Generate with AI */}
+                <div>
                   <button
                     type="button"
                     onClick={handleAIGenerate}
                     disabled={!canGenerate || aiGenerating}
-                    title={!form.category || !form.subcategory ? "Select category and subcategory first" : !uploadedFile ? "Upload a photo first" : ""}
+                    title={!form.category || !form.subcategory ? "Select category and subcategory first" : uploads.length === 0 ? "Upload a photo first" : ""}
                     className="flex items-center gap-2 bg-foreground text-background px-4 py-2.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed transition-opacity"
                   >
-                    {aiGenerating ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Wand2 className="w-4 h-4" />
-                    )}
+                    {aiGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
                     {aiGenerating ? "Generating..." : "Generate with AI"}
                   </button>
+                  <p className="text-[11px] text-muted-foreground mt-1.5">
+                    AI creates a product-on-stand shot and an on-model shot from your first uploaded photo.
+                  </p>
                 </div>
 
-                {/* Generating spinner */}
                 {aiGenerating && (
                   <div className="flex items-center gap-3 py-2 text-sm text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
@@ -448,103 +655,70 @@ export default function ArticlesPage() {
                   </div>
                 )}
 
-                {/* Error message */}
                 {aiError && (
                   <p className="text-xs text-red-500 border border-red-200 bg-red-50 px-3 py-2">{aiError}</p>
                 )}
 
-                {/* AI result cards */}
-                {aiResults && (
-                  <div className="space-y-3">
+                {/* Candidate grid — pick up to 2 */}
+                {candidates.length > 0 && (
+                  <div className="space-y-2">
                     <p className="text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">
-                      Select an image to use
+                      Select up to 2 images for this article ({selectedImages.length}/2 selected)
                     </p>
-                    <div className="grid grid-cols-2 gap-3">
-                      {/* Product Shot */}
-                      {aiResults.productShot ? (
-                        <button
-                          type="button"
-                          onClick={() => handleSelectAiImage("product")}
-                          className={`relative border-2 p-1 transition-all text-left ${
-                            selectedAiImage === "product"
-                              ? "border-yellow-500"
-                              : "border-border hover:border-foreground/40"
-                          }`}
-                        >
-                          <img
-                            src={aiResults.productShot}
-                            alt="Product Shot"
-                            className="w-full aspect-square object-cover"
-                          />
-                          <div className="mt-1.5 px-1 pb-1 flex items-center justify-between">
-                            <span className="text-[10px] uppercase tracking-widest font-semibold">Product Shot</span>
-                            {selectedAiImage === "product" && (
-                              <span className="flex items-center gap-1 text-[10px] text-yellow-600 font-semibold">
-                                <Check className="w-3 h-3" /> Selected
-                              </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {candidates.map((cand, i) => {
+                        const order = selectedImages.indexOf(cand.url);
+                        const isSelected = order >= 0;
+                        const isUpload = cand.label.startsWith("Uploaded");
+                        const uploadId = isUpload ? uploads[i]?.id : undefined;
+                        return (
+                          <div key={`${cand.label}-${i}`} className="relative">
+                            <button
+                              type="button"
+                              onClick={() => toggleImageSelect(cand.url)}
+                              className={`relative block w-full border-2 p-1 transition-all text-left ${
+                                isSelected ? "border-yellow-500" : "border-border hover:border-foreground/40"
+                              }`}
+                            >
+                              <img src={cand.url} alt={cand.label} className="w-full aspect-square object-cover" />
+                              {isSelected && (
+                                <span className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-yellow-500 text-white text-[10px] font-bold flex items-center justify-center">
+                                  {order + 1}
+                                </span>
+                              )}
+                              <div className="mt-1.5 px-1 pb-1 flex items-center justify-between">
+                                <span className="text-[10px] uppercase tracking-widest font-semibold">{cand.label}</span>
+                                {isSelected && (
+                                  <Check className="w-3 h-3 text-yellow-600" />
+                                )}
+                              </div>
+                            </button>
+                            {isUpload && uploadId && (
+                              <button
+                                type="button"
+                                onClick={() => removeUpload(uploadId)}
+                                className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
+                                aria-label="Remove photo"
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
                             )}
                           </div>
-                        </button>
-                      ) : (
-                        <div className="border border-dashed border-border p-4 flex flex-col items-center justify-center gap-2 aspect-square">
-                          <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
-                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Product Shot unavailable</span>
-                        </div>
-                      )}
-
-                      {/* Model Shot */}
-                      {aiResults.modelShot ? (
-                        <button
-                          type="button"
-                          onClick={() => handleSelectAiImage("model")}
-                          className={`relative border-2 p-1 transition-all text-left ${
-                            selectedAiImage === "model"
-                              ? "border-yellow-500"
-                              : "border-border hover:border-foreground/40"
-                          }`}
-                        >
-                          <img
-                            src={aiResults.modelShot}
-                            alt="Model Shot"
-                            className="w-full aspect-square object-cover"
-                          />
-                          <div className="mt-1.5 px-1 pb-1 flex items-center justify-between">
-                            <span className="text-[10px] uppercase tracking-widest font-semibold">Model Shot</span>
-                            {selectedAiImage === "model" && (
-                              <span className="flex items-center gap-1 text-[10px] text-yellow-600 font-semibold">
-                                <Check className="w-3 h-3" /> Selected
-                              </span>
-                            )}
-                          </div>
-                        </button>
-                      ) : (
-                        <div className="border border-dashed border-border p-4 flex flex-col items-center justify-center gap-2 aspect-square">
-                          <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
-                          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Model Shot unavailable</span>
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      The first selected image is the primary (shown on cards & listings); the second appears in the product gallery.
+                    </p>
                   </div>
                 )}
 
-                {/* Selected image preview (if AI image chosen) */}
-                {form.imageUrl && form.imageUrl.startsWith("data:") && selectedAiImage && (
-                  <div className="flex items-center gap-2 text-xs text-green-600 border border-green-200 bg-green-50 px-3 py-2">
-                    <Check className="w-3.5 h-3.5 flex-shrink-0" />
-                    AI-generated {selectedAiImage === "product" ? "product" : "model"} shot selected. Will be saved on submit.
+                {candidates.length === 0 && (
+                  <div className="border border-dashed border-border p-6 flex flex-col items-center justify-center gap-2 text-center">
+                    <ImageIcon className="w-8 h-8 text-muted-foreground/40" />
+                    <span className="text-xs text-muted-foreground">Upload photos and/or generate with AI, then pick up to 2 images.</span>
                   </div>
                 )}
-
-                {/* Hidden required input to satisfy form validation when using AI image */}
-                <input
-                  type="text"
-                  value={form.imageUrl}
-                  onChange={() => {}}
-                  className="sr-only"
-                  required
-                  tabIndex={-1}
-                  aria-hidden="true"
-                />
               </div>
             )}
           </div>
@@ -552,10 +726,10 @@ export default function ArticlesPage() {
           <div className="flex items-center gap-2 pt-2">
             <button
               type="submit"
-              disabled={createMutation.isPending}
+              disabled={createMutation.isPending || savingImages}
               className="bg-foreground text-background px-6 py-2.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
             >
-              {createMutation.isPending && <Loader2 className="w-3 h-3 animate-spin" />}
+              {(createMutation.isPending || savingImages) && <Loader2 className="w-3 h-3 animate-spin" />}
               Add Article
             </button>
             <button
@@ -580,6 +754,7 @@ export default function ArticlesPage() {
               <thead>
                 <tr className="border-b border-border text-left">
                   <th className="px-4 py-3 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">ID</th>
+                  <th className="px-4 py-3 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">Image</th>
                   <th className="px-4 py-3 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">Barcode</th>
                   <th className="px-4 py-3 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">Name</th>
                   <th className="px-4 py-3 text-[10px] uppercase tracking-widest font-semibold text-muted-foreground">Category</th>
@@ -591,7 +766,7 @@ export default function ArticlesPage() {
               <tbody>
                 {(!products || products.length === 0) ? (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                    <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
                       No articles yet. Click "Add Article" to create one.
                     </td>
                   </tr>
@@ -599,6 +774,20 @@ export default function ArticlesPage() {
                   products.map((p) => (
                     <tr key={p.id} className="border-b border-border/50 hover:bg-secondary/30">
                       <td className="px-4 py-3 text-muted-foreground">#{p.id}</td>
+                      <td className="px-4 py-3">
+                        {p.imageUrl ? (
+                          <img
+                            src={p.imageUrl}
+                            alt={p.name}
+                            className="w-10 h-12 object-cover border border-border bg-secondary"
+                            loading="lazy"
+                          />
+                        ) : (
+                          <div className="w-10 h-12 border border-border bg-secondary flex items-center justify-center">
+                            <ImageIcon className="w-4 h-4 text-muted-foreground/40" />
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs">{p.barcode || "—"}</td>
                       <td className="px-4 py-3 font-medium">{p.name}</td>
                       <td className="px-4 py-3 text-muted-foreground">{p.category} / {p.subcategory}</td>
