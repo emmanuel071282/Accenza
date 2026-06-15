@@ -138,6 +138,23 @@ app.use((req, res, next) => {
     )
   `);
 
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS admin_categories (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      subcategories TEXT[] NOT NULL DEFAULT '{}'
+    )
+  `);
+
+  await db.execute(sql`
+    INSERT INTO admin_categories (name, subcategories) VALUES
+      ('Jewellery', ARRAY['Rings','Bangles','Bracelets','Necklaces','Earrings','Nose Pins','Anklets','Maang Tikka','Jewellery Sets']),
+      ('Cosmetics', ARRAY['Lip Colour','Foundation','Blush','Eyeshadow','Kajal','Mascara','Nail Polish','Skin Care','Hair Care','Fragrance','Makeup Kit','Concealer','Highlighter','Primer']),
+      ('Handbags', ARRAY['Tote Bags','Clutches','Sling Bags','Backpacks','Shoulder Bags','Mini Bags','Potli Bags','Wallets','Wristlets']),
+      ('Accessories', ARRAY['Scarves','Sunglasses','Watches','Hairbands','Hair Clips','Belts','Caps','Stoles'])
+    ON CONFLICT (name) DO NOTHING
+  `);
+
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

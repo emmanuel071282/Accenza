@@ -35,6 +35,7 @@ const InventoryPage = lazy(() => import("@/pages/admin/InventoryPage"));
 const ArticlesPage = lazy(() => import("@/pages/admin/ArticlesPage"));
 const AdminSupportPage = lazy(() => import("@/pages/admin/SupportPage"));
 const CampaignsPage = lazy(() => import("@/pages/admin/CampaignsPage"));
+const CategoriesPage = lazy(() => import("@/pages/admin/CategoriesPage"));
 
 const PageFallback = () => <div className="min-h-screen bg-background" />;
 
@@ -84,6 +85,7 @@ function App() {
             <Route path="/admin/articles" component={ArticlesPage} />
             <Route path="/admin/support" component={AdminSupportPage} />
             <Route path="/admin/campaigns" component={CampaignsPage} />
+            <Route path="/admin/categories" component={CategoriesPage} />
             <Route component={StorefrontRouter} />
           </Switch>
         </Suspense>

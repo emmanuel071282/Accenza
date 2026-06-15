@@ -3,7 +3,7 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, otpVerifications, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, type InsertCampaign } from "@shared/schema";
+import { registerSchema, loginSchema, ORDER_STATUSES, getSizesForProduct, otpVerifications, insertCampaignSchema, insertProductSchema, generateEAN13Barcode, insertCategorySchema, type InsertCampaign } from "@shared/schema";
 import bcrypt from "bcryptjs";
 import { sendSms, sendWhatsApp } from "./sms";
 import { processStylistMessage, getDemoResponse, isAIStylistConfigured } from "./ai-stylist";
@@ -1455,6 +1455,48 @@ export async function registerRoutes(
   app.get("/api/admin/stylist/conversations", requireAdmin, async (_req, res) => {
     const allMessages = await storage.getStylistConversation("", 200);
     res.json(allMessages);
+  });
+
+  // ── Category routes ──
+  app.get("/api/categories", async (_req, res) => {
+    try {
+      const cats = await storage.getCategories();
+      res.json(cats);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch categories" });
+    }
+  });
+
+  app.get("/api/admin/categories", requireAdmin, async (_req, res) => {
+    try {
+      const cats = await storage.getCategories();
+      res.json(cats);
+    } catch (err) {
+      res.status(500).json({ message: "Failed to fetch categories" });
+    }
+  });
+
+  app.post("/api/admin/categories", requireAdmin, async (req, res) => {
+    try {
+      const parsed = insertCategorySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0].message });
+      const cat = await storage.createCategory(parsed.data);
+      res.json(cat);
+    } catch (err: any) {
+      if (err?.code === "23505") return res.status(409).json({ message: "Category already exists" });
+      res.status(500).json({ message: "Failed to create category" });
+    }
+  });
+
+  app.delete("/api/admin/categories/:id", requireAdmin, async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      if (!id) return res.status(400).json({ message: "Invalid id" });
+      await storage.deleteCategory(id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ message: "Failed to delete category" });
+    }
   });
 
   await seedDatabase();

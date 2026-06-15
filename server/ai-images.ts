@@ -117,12 +117,13 @@ async function callOpenAIImageEdit(imageBase64: string, mimeType: string, prompt
     const imageBuffer = Buffer.from(base64Data, "base64");
 
     const formData = new FormData();
-    const blob = new Blob([imageBuffer], { type: mimeType || "image/jpeg" });
-    formData.append("image", blob, "product.jpg");
+    const blob = new Blob([imageBuffer], { type: "image/png" });
+    formData.append("image", blob, "product.png");
     formData.append("prompt", prompt);
     formData.append("model", "gpt-image-1");
     formData.append("n", "1");
     formData.append("size", "1024x1024");
+    formData.append("response_format", "b64_json");
 
     const res = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",

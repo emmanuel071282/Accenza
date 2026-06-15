@@ -330,3 +330,12 @@ export function getAllSubcategories(config: SubcategoryConfig): string[] {
   }
   return config as string[];
 }
+
+export const categories = pgTable("admin_categories", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  subcategories: text("subcategories").array().notNull().default([]),
+});
+export const insertCategorySchema = createInsertSchema(categories).omit({ id: true });
+export type InsertCategory = z.infer<typeof insertCategorySchema>;
+export type Category = typeof categories.$inferSelect;

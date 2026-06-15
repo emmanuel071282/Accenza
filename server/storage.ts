@@ -1,7 +1,7 @@
 import { db } from "./db";
 import {
   products, users, stores, inventory, orders, orderItems, supportRequests, campaigns,
-  stylistConversations,
+  stylistConversations, categories,
   type Product, type InsertProduct,
   type User, type InsertUser,
   type Store, type InsertStore,
@@ -11,6 +11,7 @@ import {
   type SupportRequest, type InsertSupportRequest,
   type Campaign, type InsertCampaign,
   type StylistConversation, type InsertStylistConversation,
+  type Category, type InsertCategory,
   getSizesForProduct,
 } from "@shared/schema";
 import { eq, and, desc, sql, gte, lte, inArray, or, ilike } from "drizzle-orm";
@@ -116,6 +117,11 @@ export interface IStorage {
   getStylistConversation(mobile: string, limit?: number): Promise<StylistConversation[]>;
   addStylistMessage(data: InsertStylistConversation): Promise<StylistConversation>;
   getStylistStats(): Promise<{ totalConversations: number; uniqueUsers: number; productRecommendations: number }>;
+
+  // Categories
+  getCategories(): Promise<Category[]>;
+  createCategory(data: InsertCategory): Promise<Category>;
+  deleteCategory(id: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -801,6 +807,19 @@ export class DatabaseStorage implements IStorage {
       uniqueUsers: Number(stats?.uniqueUsers ?? 0),
       productRecommendations: Number(stats?.productRecommendations ?? 0),
     };
+  }
+
+  async getCategories(): Promise<Category[]> {
+    return db.select().from(categories).orderBy(categories.name);
+  }
+
+  async createCategory(data: InsertCategory): Promise<Category> {
+    const [cat] = await db.insert(categories).values(data).returning();
+    return cat;
+  }
+
+  async deleteCategory(id: number): Promise<void> {
+    await db.delete(categories).where(eq(categories.id, id));
   }
 }
 

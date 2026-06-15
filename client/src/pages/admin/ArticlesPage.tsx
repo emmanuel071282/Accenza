@@ -1,13 +1,13 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import AdminLayout from "./AdminLayout";
-import { Loader2, Plus, X, Printer, Barcode, Camera, Wand2, Check, ImageIcon, Upload, Download } from "lucide-react";
+import { Loader2, Plus, X, Printer, Barcode, Camera, Wand2, Check, ImageIcon, Upload, Download, Crop } from "lucide-react";
 import type { Product } from "@shared/schema";
 import { SUBCATEGORIES, getAllSubcategories, getSizesForProduct } from "@shared/schema";
 import JsBarcode from "jsbarcode";
 
-const CATEGORIES = ["Jewellery", "Cosmetics", "Handbags", "Accessories"];
+type AdminCategory = { id: number; name: string; subcategories: string[] };
 
 const CSV_HEADERS = ["name", "description", "price", "costPrice", "category", "subcategory", "imageUrl", "imageUrl2", "sizes", "barcode"];
 
@@ -118,6 +118,180 @@ function BarcodeModal({ product, onClose }: { product: Product; onClose: () => v
   );
 }
 
+function ImageAdjustModal({
+  src,
+  onApply,
+  onClose,
+}: {
+  src: string;
+  onApply: (dataUrl: string) => void;
+  onClose: () => void;
+}) {
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const dragging = useRef(false);
+  const lastPos = useRef({ x: 0, y: 0 });
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const CONTAINER = 320;
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragging.current) return;
+    const dx = e.clientX - lastPos.current.x;
+    const dy = e.clientY - lastPos.current.y;
+    lastPos.current = { x: e.clientX, y: e.clientY };
+    setPanX((p) => p + dx);
+    setPanY((p) => p + dy);
+  }, []);
+
+  const handleMouseUp = useCallback(() => { dragging.current = false; }, []);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    dragging.current = true;
+    lastPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!dragging.current || e.touches.length !== 1) return;
+    e.preventDefault();
+    const dx = e.touches[0].clientX - lastPos.current.x;
+    const dy = e.touches[0].clientY - lastPos.current.y;
+    lastPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    setPanX((p) => p + dx);
+    setPanY((p) => p + dy);
+  }, []);
+
+  const handleTouchEnd = useCallback(() => { dragging.current = false; }, []);
+
+  const handleApply = useCallback(() => {
+    const img = imgRef.current;
+    if (!img) return;
+
+    const OUTPUT = 1024;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+
+    // The image is displayed with object-fit: contain inside 320x320
+    // Compute the rendered size of the image inside the container
+    const scale = Math.min(CONTAINER / nw, CONTAINER / nh);
+    const renderedW = nw * scale * zoom;
+    const renderedH = nh * scale * zoom;
+
+    // The image center is offset by panX, panY from the container center
+    // Image left-top in container coords:
+    const imgLeft = (CONTAINER - renderedW) / 2 + panX;
+    const imgTop = (CONTAINER - renderedH) / 2 + panY;
+
+    // Viewport (0,0)-(320,320) mapped to image source coords:
+    // containerX = imgLeft + srcX * (renderedW / nw)
+    // => srcX = (containerX - imgLeft) / (renderedW / nw)
+    const pixelScale = renderedW / nw; // pixels per source pixel
+    const srcX = (0 - imgLeft) / pixelScale;
+    const srcY = (0 - imgTop) / pixelScale;
+    const srcW = CONTAINER / pixelScale;
+    const srcH = CONTAINER / pixelScale;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = OUTPUT;
+    canvas.height = OUTPUT;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, OUTPUT, OUTPUT);
+
+    const dataUrl = canvas.toDataURL("image/png");
+    onApply(dataUrl);
+  }, [zoom, panX, panY, onApply]);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
+      <div
+        className="bg-background border border-border p-6 space-y-4 w-[380px] max-w-full mx-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-bold uppercase tracking-widest">Adjust Image</h3>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Crop preview */}
+        <div
+          className="relative mx-auto bg-secondary/30 overflow-hidden cursor-move select-none"
+          style={{ width: CONTAINER, height: CONTAINER }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        >
+          <img
+            ref={imgRef}
+            src={src}
+            alt="Adjust preview"
+            draggable={false}
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: `translate(calc(-50% + ${panX}px), calc(-50% + ${panY}px)) scale(${zoom})`,
+              maxWidth: "none",
+              maxHeight: "none",
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              transformOrigin: "center center",
+              userSelect: "none",
+              pointerEvents: "none",
+            }}
+          />
+        </div>
+
+        {/* Zoom slider */}
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase tracking-widest font-semibold flex justify-between">
+            <span>Zoom</span>
+            <span className="text-muted-foreground font-normal normal-case">{zoom.toFixed(1)}x</span>
+          </label>
+          <input
+            type="range"
+            min={1}
+            max={3}
+            step={0.05}
+            value={zoom}
+            onChange={(e) => setZoom(Number(e.target.value))}
+            className="w-full accent-foreground"
+          />
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            onClick={handleApply}
+            className="flex-1 bg-foreground text-background py-2.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90"
+          >
+            Apply
+          </button>
+          <button
+            onClick={onClose}
+            className="border border-border px-4 py-2.5 text-xs uppercase tracking-widest font-semibold hover:bg-secondary"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type Upload = { id: string; preview: string; mime: string };
 
 export default function ArticlesPage() {
@@ -143,6 +317,7 @@ export default function ArticlesPage() {
   const [useUrlMode, setUseUrlMode] = useState(false);
   const [urlInputs, setUrlInputs] = useState({ a: "", b: "" });
   const [savingImages, setSavingImages] = useState(false);
+  const [adjustModal, setAdjustModal] = useState<{ index: number; url: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // CSV import state
@@ -153,6 +328,15 @@ export default function ArticlesPage() {
   const { data: products, isLoading } = useQuery<Product[]>({
     queryKey: ["/api/admin/products"],
   });
+
+  const { data: apiCategories = [] } = useQuery<AdminCategory[]>({
+    queryKey: ["/api/admin/categories"],
+  });
+
+  // Use API-driven categories; fall back to hardcoded 4 if not yet loaded.
+  const categoryNames = apiCategories.length > 0
+    ? apiCategories.map((c) => c.name)
+    : ["Jewellery", "Cosmetics", "Handbags", "Accessories"];
 
   const invalidateProducts = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/admin/products"] });
@@ -204,9 +388,33 @@ export default function ArticlesPage() {
     );
   };
 
-  const subcategoryList = form.category && SUBCATEGORIES[form.category]
-    ? getAllSubcategories(SUBCATEGORIES[form.category])
-    : [];
+  const handleAdjustApply = (dataUrl: string) => {
+    if (!adjustModal) return;
+    const { index, url } = adjustModal;
+    // Replace in candidates array — could be an upload or AI result
+    const cand = candidates[index];
+    if (!cand) return;
+    // If it's an uploaded photo, update uploads
+    if (cand.label.startsWith("Uploaded")) {
+      const uploadIdx = index; // uploads are first in candidates
+      setUploads((prev) => prev.map((u, i) => i === uploadIdx ? { ...u, preview: dataUrl } : u));
+    } else if (cand.label === "AI · Product") {
+      setAiResults((prev) => prev ? { ...prev, productShot: dataUrl } : prev);
+    } else if (cand.label === "AI · Model") {
+      setAiResults((prev) => prev ? { ...prev, modelShot: dataUrl } : prev);
+    }
+    // Update selectedImages if this url was selected
+    setSelectedImages((prev) => prev.map((s) => s === url ? dataUrl : s));
+    setAdjustModal(null);
+  };
+
+  // Subcategories from DB categories first, then fall back to hardcoded map.
+  const subcategoryList: string[] = (() => {
+    if (!form.category) return [];
+    const apiCat = apiCategories.find((c) => c.name === form.category);
+    if (apiCat && apiCat.subcategories.length > 0) return apiCat.subcategories;
+    return SUBCATEGORIES[form.category] ? getAllSubcategories(SUBCATEGORIES[form.category]) : [];
+  })();
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -519,7 +727,7 @@ export default function ArticlesPage() {
                 required
               >
                 <option value="">Select category</option>
-                {CATEGORIES.map((c) => (
+                {categoryNames.map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
@@ -703,6 +911,15 @@ export default function ArticlesPage() {
                                 <X className="w-3 h-3" />
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => setAdjustModal({ index: i, url: cand.url })}
+                              className="absolute bottom-8 right-1.5 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black"
+                              aria-label="Adjust image"
+                              title="Crop / Adjust"
+                            >
+                              <Crop className="w-3 h-3" />
+                            </button>
                           </div>
                         );
                       })}
@@ -816,6 +1033,13 @@ export default function ArticlesPage() {
 
       {barcodeProduct && (
         <BarcodeModal product={barcodeProduct} onClose={() => setBarcodeProduct(null)} />
+      )}
+      {adjustModal && (
+        <ImageAdjustModal
+          src={adjustModal.url}
+          onApply={handleAdjustApply}
+          onClose={() => setAdjustModal(null)}
+        />
       )}
     </AdminLayout>
   );
