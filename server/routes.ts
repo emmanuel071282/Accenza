@@ -485,9 +485,15 @@ export async function registerRoutes(
         return res.status(503).json({ message: "AI image generation is not configured. Set OPENAI_API_KEY." });
       }
 
-      const { productShot, modelShot } = await generateProductImages(
-        imageBase64, mimeType || "image/jpeg", category, subcategory, productName || "product"
+      const { productShot, modelShot, error } = await generateProductImages(
+        imageBase64, mimeType || "image/png", category, subcategory, productName || "product"
       );
+
+      if (!productShot && !modelShot) {
+        return res.status(422).json({
+          message: error || "AI could not generate images from this photo. Try a clearer photo on a plain background.",
+        });
+      }
 
       res.json({
         productShot: productShot ? `data:image/png;base64,${productShot}` : null,

@@ -107,12 +107,11 @@ function getProductPrompt(subcategory: string, productName: string): string {
   return `Professional e-commerce product photograph of the ${productName} ${display}, on a clean soft neutral background. Studio lighting, sharp focus, premium luxury catalogue look, product centered and filling most of the frame. ${PRESERVE}`;
 }
 
-async function callOpenAIImageEdit(imageBase64: string, mimeType: string, prompt: string): Promise<string | null> {
+async function callOpenAIImageEdit(imageBase64: string, prompt: string): Promise<{ b64: string | null; error?: string }> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  if (!OPENAI_API_KEY) return null;
+  if (!OPENAI_API_KEY) return { b64: null, error: "OPENAI_API_KEY not set" };
 
   try {
-    // Strip data URL prefix if present
     const base64Data = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
     const imageBuffer = Buffer.from(base64Data, "base64");
 
@@ -132,16 +131,17 @@ async function callOpenAIImageEdit(imageBase64: string, mimeType: string, prompt
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
+      const err = await res.json().catch(() => ({})) as any;
+      const msg = err?.error?.message || `OpenAI error ${res.status}`;
       console.error("[AI Images] OpenAI error:", err);
-      return null;
+      return { b64: null, error: msg };
     }
 
-    const data = await res.json() as { data: { b64_json?: string; url?: string }[] };
-    return data.data[0]?.b64_json || null;
+    const data = await res.json() as { data: { b64_json?: string }[] };
+    return { b64: data.data[0]?.b64_json || null };
   } catch (err) {
     console.error("[AI Images] Error calling OpenAI:", err);
-    return null;
+    return { b64: null, error: String(err) };
   }
 }
 
@@ -151,14 +151,18 @@ export function isAIImagesConfigured(): boolean {
 
 export async function generateProductImages(
   imageBase64: string,
-  mimeType: string,
+  _mimeType: string,
   category: string,
   subcategory: string,
   productName: string
-): Promise<{ productShot: string | null; modelShot: string | null }> {
-  const [productShot, modelShot] = await Promise.all([
-    callOpenAIImageEdit(imageBase64, mimeType, getProductPrompt(subcategory, productName)),
-    callOpenAIImageEdit(imageBase64, mimeType, getModelPrompt(subcategory, productName)),
+): Promise<{ productShot: string | null; modelShot: string | null; error?: string }> {
+  const [productResult, modelResult] = await Promise.all([
+    callOpenAIImageEdit(imageBase64, getProductPrompt(subcategory, productName)),
+    callOpenAIImageEdit(imageBase64, getModelPrompt(subcategory, productName)),
   ]);
-  return { productShot, modelShot };
+  return {
+    productShot: productResult.b64,
+    modelShot: modelResult.b64,
+    error: productResult.error || modelResult.error,
+  };
 }

@@ -421,12 +421,25 @@ export default function ArticlesPage() {
     files.forEach((file) => {
       const reader = new FileReader();
       reader.onload = (ev) => {
-        const preview = ev.target?.result as string;
-        setUploads((prev) =>
-          prev.length >= 2
-            ? prev
-            : [...prev, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, preview, mime: file.type }]
-        );
+        const dataUrl = ev.target?.result as string;
+        // Convert to PNG via canvas so OpenAI always receives valid PNG bytes.
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            const pngDataUrl = canvas.toDataURL("image/png");
+            setUploads((prev) =>
+              prev.length >= 2
+                ? prev
+                : [...prev, { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, preview: pngDataUrl, mime: "image/png" }]
+            );
+          }
+        };
+        img.src = dataUrl;
       };
       reader.readAsDataURL(file);
     });
@@ -451,25 +464,31 @@ export default function ArticlesPage() {
     try {
       const res = await apiRequest("POST", "/api/admin/ai-images/generate", {
         imageBase64: base.preview,
-        mimeType: base.mime,
+        mimeType: "image/png",
         category: form.category,
         subcategory: form.subcategory,
         productName: form.name || form.subcategory,
       });
       const data = await res.json();
-      if (!data.productShot && !data.modelShot) {
-        setAiError("AI could not generate images from this photo. Try a clearer photo on a plain background.");
-        return;
-      }
       setAiResults(data);
     } catch (err) {
+      // apiRequest throws on non-2xx; extract the JSON message if present.
       const msg = err instanceof Error ? err.message : "";
+      // Try to parse the body embedded in the error string (format: "422: {json}")
+      const jsonMatch = msg.match(/\d+: (.*)/s);
+      let friendly = msg;
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[1]);
+          friendly = parsed.message || msg;
+        } catch { /* keep original */ }
+      }
       if (msg.includes("503")) {
         setAiError("AI image generation is not configured on the server (OPENAI_API_KEY missing).");
       } else if (msg.includes("413")) {
-        setAiError("That photo is too large. Please use a smaller image (under ~10 MB).");
+        setAiError("That photo is too large. Please use a smaller image.");
       } else {
-        setAiError(msg || "Failed to connect to AI service. Please try again.");
+        setAiError(friendly || "Failed to connect to AI service. Please try again.");
       }
     } finally {
       setAiGenerating(false);
