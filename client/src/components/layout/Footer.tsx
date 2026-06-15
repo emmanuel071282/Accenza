@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 
-const INSTAGRAM_URL = "#"; // update when ready
+const INSTAGRAM_URL = "https://www.instagram.com/accenza.store?igsh=MTRkODQ5ZGpycnNxaw==";
 const FACEBOOK_URL = "https://www.facebook.com/share/1BCEpzR2Y1/";
 const WHATSAPP_URL = "https://wa.me/917778988998";
 const PHONE = "+91 7778988998";
