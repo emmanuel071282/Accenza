@@ -95,7 +95,7 @@ const PRODUCT_DISPLAY: Record<string, string> = {
   "Sunglasses": "displayed on a clean surface",
 };
 
-const PRESERVE = "CRITICAL: keep the product EXACTLY as it appears in the reference image — identical design, shape, colour, gemstones, metal tone, engraving and every detail. Do NOT redesign, restyle, recolour or invent a different product. Only change the background and presentation.";
+const PRESERVE = "CRITICAL: keep the product EXACTLY as it appears in the reference image — same design, shape, colour, gemstones/stones, metal tone, finish, pattern, text, engraving, and every single detail. Do NOT redesign, restyle, recolour, simplify, or invent a different product. Do NOT change the product itself in any way. Only the background and environmental presentation may change.";
 
 function getModelPrompt(subcategory: string, productName: string): string {
   const base = BODY_PLACEMENT[subcategory] || `beautiful Indian woman with the ${productName}, white background, professional studio lighting`;
