@@ -1,5 +1,6 @@
 import { useCart } from "@/hooks/use-cart";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
 import { Minus, Plus, Trash2, ShoppingBag } from "lucide-react";
 
 export function CartDrawer() {
