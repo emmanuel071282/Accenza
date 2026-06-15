@@ -123,6 +123,7 @@ export default function ArticlesPage() {
     onSuccess: (newProduct: Product) => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/products"] });
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/products/category/:category"] });
       setBarcodeProduct(newProduct);
       setShowAddForm(false);
       resetForm();

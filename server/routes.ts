@@ -471,7 +471,13 @@ export async function registerRoutes(
       const base64Data = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
       const buffer = Buffer.from(base64Data, "base64");
 
-      const dir = join(process.cwd(), "client", "public", "products");
+      const isProduction = process.env.NODE_ENV === "production";
+      const dir = join(
+        process.cwd(),
+        isProduction ? "dist" : "client",
+        "public",
+        "products"
+      );
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
       const filename = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
