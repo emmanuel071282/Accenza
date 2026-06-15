@@ -11,6 +11,7 @@ export interface CartItem {
 interface CartStore {
   items: CartItem[];
   isOpen: boolean;
+  _hydrated: boolean;
   setIsOpen: (isOpen: boolean) => void;
   addItem: (product: Product, quantity?: number, size?: string) => void;
   removeItem: (productId: number, size?: string) => void;
@@ -29,15 +30,16 @@ export const useCart = create<CartStore>()(
     (set, get) => ({
       items: [],
       isOpen: false,
-      
+      _hydrated: false,
+
       setIsOpen: (isOpen) => set({ isOpen }),
-      
+
       addItem: (product, quantity = 1, size = "") => {
         set((state) => {
           const existingItem = state.items.find(
             (item) => item.product.id === product.id && item.selectedSize === size
           );
-          
+
           if (existingItem) {
             return {
               items: state.items.map((item) =>
@@ -48,14 +50,14 @@ export const useCart = create<CartStore>()(
               isOpen: true,
             };
           }
-          
+
           return {
             items: [...state.items, { product, quantity, selectedSize: size }],
             isOpen: true,
           };
         });
       },
-      
+
       removeItem: (productId, size) => {
         set((state) => ({
           items: state.items.filter(
@@ -63,10 +65,10 @@ export const useCart = create<CartStore>()(
           ),
         }));
       },
-      
+
       updateQuantity: (productId, quantity, size) => {
         set((state) => ({
-          items: quantity > 0 
+          items: quantity > 0
             ? state.items.map((item) =>
                 item.product.id === productId && (size === undefined || item.selectedSize === size)
                   ? { ...item, quantity }
@@ -77,16 +79,16 @@ export const useCart = create<CartStore>()(
               ),
         }));
       },
-      
+
       clearCart: () => set({ items: [] }),
-      
+
       get cartTotal() {
         return get().items.reduce(
           (total, item) => total + Number(item.product.price) * item.quantity,
           0
         );
       },
-      
+
       get itemCount() {
         return get().items.reduce((count, item) => count + item.quantity, 0);
       },
@@ -94,6 +96,9 @@ export const useCart = create<CartStore>()(
     {
       name: "fashion-cart-storage",
       partialize: (state) => ({ items: state.items }),
+      onRehydrateStorage: () => (state) => {
+        if (state) state._hydrated = true;
+      },
     }
   )
 );

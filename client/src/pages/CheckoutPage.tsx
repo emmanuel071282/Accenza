@@ -36,7 +36,7 @@ const INDIAN_STATES = [
 ];
 
 export default function CheckoutPage() {
-  const { items, cartTotal, clearCart } = useCart();
+  const { items, cartTotal, clearCart, _hydrated } = useCart();
   const { isLoggedIn, user } = useAuth();
   const { toast } = useToast();
 
@@ -167,6 +167,14 @@ export default function CheckoutPage() {
       setIsProcessingPayment(false);
     }
   }, [items, shipping, clearCart, toast]);
+
+  if (!_hydrated) {
+    return (
+      <div className="min-h-screen bg-background pt-28 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   if (items.length === 0 && !orderPlaced) {
     return (
