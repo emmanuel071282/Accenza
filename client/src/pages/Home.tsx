@@ -3,6 +3,15 @@ import { useQuery } from "@tanstack/react-query";
 import { ProductCard } from "@/components/product/ProductCard";
 import type { Product } from "@shared/schema";
 
+const STORIES = [
+  { label: "Jewellery", href: "/category/Jewellery", emoji: "💎", bg: "bg-amber-50" },
+  { label: "Cosmetics", href: "/category/Cosmetics", emoji: "💄", bg: "bg-rose-50" },
+  { label: "Handbags", href: "/category/Handbags", emoji: "👜", bg: "bg-stone-100" },
+  { label: "Accessories", href: "/category/Accessories", emoji: "✨", bg: "bg-amber-100" },
+  { label: "New In", href: "/category/Jewellery", emoji: "🆕", bg: "bg-green-50" },
+  { label: "Offers", href: "/campaign", emoji: "🎁", bg: "bg-purple-50" },
+];
+
 const HERO_CATEGORIES = [
   {
     name: "Jewellery",
@@ -40,6 +49,23 @@ export default function Home() {
 
   return (
     <div className="pt-24">
+
+      {/* Story highlights */}
+      <section className="container mx-auto px-4 md:px-6 pt-6 pb-4">
+        <div className="flex items-center gap-5 overflow-x-auto pb-2 scrollbar-none">
+          {STORIES.map((s) => (
+            <Link key={s.label} href={s.href} className="flex flex-col items-center gap-2 shrink-0 group">
+              <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full ${s.bg} flex items-center justify-center text-2xl md:text-3xl border-2 border-transparent group-hover:border-primary transition-all`}>
+                {s.emoji}
+              </div>
+              <span className="text-[10px] uppercase tracking-widest font-medium text-muted-foreground group-hover:text-foreground transition-colors whitespace-nowrap">
+                {s.label}
+              </span>
+            </Link>
+          ))}
+        </div>
+      </section>
+
       {/* Hero */}
       <section className="container mx-auto px-4 md:px-6 py-16 md:py-24 text-center">
         <p className="text-xs uppercase tracking-[0.3em] text-primary mb-4">New Collection</p>
@@ -88,6 +114,33 @@ export default function Home() {
           </div>
         </section>
       )}
+
+      {/* Our Story */}
+      <section className="container mx-auto px-4 md:px-6 py-20 md:py-28">
+        <div className="max-w-3xl mx-auto text-center space-y-6">
+          <p className="text-xs uppercase tracking-[0.3em] text-primary">Our Story</p>
+          <h2 className="font-display text-3xl md:text-5xl font-light tracking-wide">
+            Born from a love of<br className="hidden md:block" /> Indian craftsmanship
+          </h2>
+          <p className="text-muted-foreground leading-relaxed text-lg max-w-xl mx-auto">
+            Accenza was founded with a simple belief — every Indian woman deserves access to beautifully crafted jewellery, cosmetics and accessories without compromise. We work directly with artisans and curators to bring you pieces that celebrate tradition and modern style in equal measure.
+          </p>
+          <div className="grid grid-cols-3 gap-8 pt-8 max-w-sm mx-auto">
+            <div className="text-center">
+              <p className="font-display text-3xl font-light">500+</p>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground mt-1">Products</p>
+            </div>
+            <div className="text-center border-x border-border">
+              <p className="font-display text-3xl font-light">10k+</p>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground mt-1">Customers</p>
+            </div>
+            <div className="text-center">
+              <p className="font-display text-3xl font-light">All India</p>
+              <p className="text-xs uppercase tracking-widest text-muted-foreground mt-1">Delivery</p>
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Brand promise */}
       <section className="bg-primary/5 py-16 md:py-24">
