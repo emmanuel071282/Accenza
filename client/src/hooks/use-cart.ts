@@ -97,7 +97,10 @@ export const useCart = create<CartStore>()(
       name: "fashion-cart-storage",
       partialize: (state) => ({ items: state.items }),
       onRehydrateStorage: () => (state) => {
-        if (state) state._hydrated = true;
+        if (state) {
+          // Use setTimeout so useCart is defined before we call setState
+          setTimeout(() => useCart.setState({ _hydrated: true }), 0);
+        }
       },
     }
   )

@@ -2,6 +2,7 @@ import { useCart } from "@/hooks/use-cart";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Minus, Plus, Trash2, ShoppingBag } from "lucide-react";
+import { Link } from "wouter";
 
 export function CartDrawer() {
   const { isOpen, setIsOpen, items, removeItem, updateQuantity, cartTotal } = useCart();
@@ -107,13 +108,14 @@ export function CartDrawer() {
               </div>
             </div>
             
-              <a
+              <Link
                 href="/checkout"
                 data-testid="button-checkout"
+                onClick={() => setIsOpen(false)}
                 className="w-full block text-center rounded-none py-4 text-sm uppercase tracking-widest font-semibold bg-foreground text-background hover:opacity-90 transition-opacity"
               >
                 Continue to Checkout
-              </a>
+              </Link>
             <p className="text-[10px] text-center text-muted-foreground">
               We accept Visa, Mastercard, RuPay, UPI, and Net Banking.
             </p>

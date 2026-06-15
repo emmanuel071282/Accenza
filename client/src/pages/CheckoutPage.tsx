@@ -36,10 +36,11 @@ const INDIAN_STATES = [
 ];
 
 export default function CheckoutPage() {
-  const { items, cartTotal, clearCart, _hydrated } = useCart();
+  const { items, cartTotal, clearCart } = useCart();
   const { isLoggedIn, user } = useAuth();
   const { toast } = useToast();
 
+  const [mounted, setMounted] = useState(false);
   const [step, setStep] = useState<"shipping" | "payment">("shipping");
   const [orderPlaced, setOrderPlaced] = useState(false);
   const [placedOrderNumber, setPlacedOrderNumber] = useState("");
@@ -168,7 +169,9 @@ export default function CheckoutPage() {
     }
   }, [items, shipping, clearCart, toast]);
 
-  if (!_hydrated) {
+  useEffect(() => { setMounted(true); }, []);
+
+  if (!mounted) {
     return (
       <div className="min-h-screen bg-background pt-28 flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
