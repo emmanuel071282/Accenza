@@ -99,6 +99,7 @@ export default function ArticlesPage() {
     subcategory: "",
   });
   const [autoSizes, setAutoSizes] = useState<string[]>([]);
+  const [selectedSizes, setSelectedSizes] = useState<string[]>([]);
 
   // AI image generation state
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -131,6 +132,7 @@ export default function ArticlesPage() {
   const resetForm = () => {
     setForm({ name: "", description: "", price: "", costPrice: "", imageUrl: "", category: "", subcategory: "" });
     setAutoSizes([]);
+    setSelectedSizes([]);
     setUploadedFile(null);
     setUploadedPreview(null);
     setAiResults(null);
@@ -142,12 +144,20 @@ export default function ArticlesPage() {
   const handleCategoryChange = (category: string) => {
     setForm((prev) => ({ ...prev, category, subcategory: "" }));
     setAutoSizes([]);
+    setSelectedSizes([]);
   };
 
   const handleSubcategoryChange = (subcategory: string) => {
     setForm((prev) => ({ ...prev, subcategory }));
     const sizes = getSizesForProduct(form.category, subcategory);
     setAutoSizes(sizes);
+    setSelectedSizes(sizes); // suggested default — admin can toggle any off
+  };
+
+  const toggleSize = (size: string) => {
+    setSelectedSizes((prev) =>
+      prev.includes(size) ? prev.filter((s) => s !== size) : [...prev, size]
+    );
   };
 
   const subcategoryList = form.category && SUBCATEGORIES[form.category]
@@ -179,15 +189,22 @@ export default function ArticlesPage() {
         subcategory: form.subcategory,
         productName: form.name || form.subcategory,
       });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        setAiError((errData as any).message || "AI generation failed. Please try again.");
+      const data = await res.json();
+      if (!data.productShot && !data.modelShot) {
+        setAiError("AI could not generate images from this photo. Try a clearer photo on a plain background.");
         return;
       }
-      const data = await res.json();
       setAiResults(data);
     } catch (err) {
-      setAiError("Failed to connect to AI service. Please try again.");
+      // apiRequest throws "<status>: <body>" on non-OK responses; surface the real reason.
+      const msg = err instanceof Error ? err.message : "";
+      if (msg.includes("503")) {
+        setAiError("AI image generation is not configured on the server (OPENAI_API_KEY missing).");
+      } else if (msg.includes("413")) {
+        setAiError("That photo is too large. Please use a smaller image (under ~10 MB).");
+      } else {
+        setAiError(msg || "Failed to connect to AI service. Please try again.");
+      }
     } finally {
       setAiGenerating(false);
     }
@@ -214,7 +231,7 @@ export default function ArticlesPage() {
         console.error("Failed to save AI image:", err);
       }
     }
-    createMutation.mutate({ ...form, imageUrl, sizes: autoSizes });
+    createMutation.mutate({ ...form, imageUrl, sizes: selectedSizes });
   };
 
   return (
@@ -316,13 +333,27 @@ export default function ArticlesPage() {
 
           {autoSizes.length > 0 && (
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-semibold mb-2">Sizes (Auto-assigned)</label>
+              <label className="block text-[10px] uppercase tracking-widest font-semibold mb-2">
+                Sizes <span className="text-muted-foreground font-normal normal-case tracking-normal">(tap to select / deselect)</span>
+              </label>
               <div className="flex flex-wrap gap-1.5">
-                {autoSizes.map((size) => (
-                  <span key={size} className="px-2.5 py-1 bg-secondary text-xs font-medium border border-border">
-                    {size}
-                  </span>
-                ))}
+                {autoSizes.map((size) => {
+                  const active = selectedSizes.includes(size);
+                  return (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => toggleSize(size)}
+                      className={`px-2.5 py-1 text-xs font-medium border transition-colors ${
+                        active
+                          ? "bg-foreground text-background border-foreground"
+                          : "bg-background text-muted-foreground border-border hover:border-foreground/40"
+                      }`}
+                    >
+                      {size}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
