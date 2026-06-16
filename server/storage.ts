@@ -45,6 +45,7 @@ export interface IStorage {
   createUser(user: InsertUser): Promise<User>;
   getUserByMobile(mobile: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
+  updateUserRazorpayCustomerId(id: number, razorpayCustomerId: string): Promise<void>;
 
   getStores(): Promise<Store[]>;
   getStore(id: number): Promise<Store | undefined>;
@@ -189,6 +190,10 @@ export class DatabaseStorage implements IStorage {
   async getUserById(id: number): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
+  }
+
+  async updateUserRazorpayCustomerId(id: number, razorpayCustomerId: string): Promise<void> {
+    await db.update(users).set({ razorpayCustomerId }).where(eq(users.id, id));
   }
 
   async getStores(): Promise<Store[]> {

@@ -190,7 +190,7 @@ export default function CheckoutPage() {
         promoCode: appliedPromo?.code,
       });
       const orderInfo = await createRes.json();
-      const { razorpayOrderId, amount, currency, keyId, totalAmount, discountAmount: discountAmt, appliedPromo: appliedPromoCode } = orderInfo;
+      const { razorpayOrderId, amount, currency, keyId, totalAmount, discountAmount: discountAmt, appliedPromo: appliedPromoCode, razorpayCustomerId } = orderInfo;
 
       // Demo mode: no Razorpay keys configured — skip popup, go straight to verify
       if (!keyId) {
@@ -219,6 +219,9 @@ export default function CheckoutPage() {
         name: "ACCENZA Fashion",
         description: `Order — ${items.length} item${items.length !== 1 ? "s" : ""}`,
         image: "/favicon.ico",
+        // Linking a Razorpay customer_id lets Checkout offer "save card"
+        // and shows the customer's previously saved cards on later orders.
+        ...(razorpayCustomerId ? { customer_id: razorpayCustomerId } : {}),
         prefill: {
           name: user?.name || shipping.name,
           email: user?.email || "",

@@ -139,6 +139,10 @@ app.use((req, res, next) => {
   `);
 
   await db.execute(sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS razorpay_customer_id TEXT
+  `);
+
+  await db.execute(sql`
     CREATE TABLE IF NOT EXISTS admin_categories (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,

@@ -52,6 +52,39 @@ export async function createRazorpayOrder(
   return res.json() as Promise<RazorpayOrder>;
 }
 
+// Creates a Razorpay Customer so returning users can save cards (RBI tokenization)
+// and reuse them on future checkouts via the customer_id passed to Checkout.js.
+export async function createRazorpayCustomer(
+  name: string,
+  email: string,
+  contact: string
+): Promise<string | null> {
+  if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) return null;
+
+  try {
+    const res = await fetch(`${RAZORPAY_API}/customers`, {
+      method: "POST",
+      headers: {
+        Authorization: authHeader(),
+        "Content-Type": "application/json",
+      },
+      // fail_existing: "0" returns the existing customer instead of erroring
+      // if one already exists with this email/contact.
+      body: JSON.stringify({ name, email, contact, fail_existing: "0" }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      console.error("[Razorpay] customer creation failed:", data);
+      return null;
+    }
+    return (data as any).id || null;
+  } catch (err) {
+    console.error("[Razorpay] customer creation error:", err);
+    return null;
+  }
+}
+
 export function verifyPaymentSignature(
   razorpayOrderId: string,
   razorpayPaymentId: string,

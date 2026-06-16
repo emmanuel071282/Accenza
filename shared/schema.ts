@@ -104,6 +104,7 @@ export const users = pgTable("users", {
   birthday: text("birthday").notNull(),
   role: text("role").notNull().default("customer"),
   marketingOptIn: boolean("marketing_opt_in").notNull().default(false),
+  razorpayCustomerId: text("razorpay_customer_id"),
 });
 
 export const campaigns = pgTable("campaigns", {

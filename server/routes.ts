@@ -12,7 +12,7 @@ import { createWriteStream, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { db } from "./db";
 import { eq, and } from "drizzle-orm";
-import { createRazorpayOrder, verifyPaymentSignature, getRazorpayKeyId, isRazorpayConfigured } from "./payment";
+import { createRazorpayOrder, verifyPaymentSignature, getRazorpayKeyId, isRazorpayConfigured, createRazorpayCustomer } from "./payment";
 import { buildInvoiceData, generateInvoiceHTML, generateInvoiceNumber, calculateGST, sendInvoiceWhatsApp, sendInvoiceEmail } from "./invoice";
 import {
   isShiprocketConfigured,
@@ -855,6 +855,21 @@ export async function registerRoutes(
 
       const rzpOrder = await createRazorpayOrder(totalAmount, receipt);
 
+      // Ensure this user has a Razorpay customer profile so Checkout.js can
+      // offer "save card" and show previously saved cards on future orders.
+      const currentUser = (req as any).user;
+      let razorpayCustomerId: string | null = currentUser.razorpayCustomerId || null;
+      if (!razorpayCustomerId && isRazorpayConfigured()) {
+        razorpayCustomerId = await createRazorpayCustomer(
+          currentUser.name,
+          currentUser.email,
+          currentUser.mobile
+        );
+        if (razorpayCustomerId) {
+          await storage.updateUserRazorpayCustomerId(currentUser.id, razorpayCustomerId);
+        }
+      }
+
       res.json({
         razorpayOrderId: rzpOrder.id,
         amount: rzpOrder.amount,
@@ -864,6 +879,7 @@ export async function registerRoutes(
         discountAmount,
         appliedPromo,
         receipt,
+        razorpayCustomerId,
       });
     } catch (error) {
       console.error("Create payment order error:", error);
