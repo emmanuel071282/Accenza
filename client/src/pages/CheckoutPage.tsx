@@ -169,94 +169,6 @@ export default function CheckoutPage() {
     }
   }, [items, shipping, clearCart, toast]);
 
-  useEffect(() => { setMounted(true); }, []);
-
-  if (!mounted) {
-    return (
-      <div className="min-h-screen bg-background pt-28 flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  if (items.length === 0 && !orderPlaced) {
-    return (
-      <div className="min-h-screen bg-background pt-28 pb-20">
-        <div className="container mx-auto px-4 md:px-6 max-w-2xl text-center py-20">
-          <p className="text-xl font-medium mb-4">Your bag is empty</p>
-          <p className="text-muted-foreground mb-8">Add some items before checking out.</p>
-          <Link href="/" data-testid="link-continue-shopping" className="inline-block border border-foreground px-8 py-3.5 text-xs uppercase tracking-widest font-semibold">
-            Continue Shopping
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  if (orderPlaced) {
-    return (
-      <div className="min-h-screen bg-background pt-28 pb-20">
-        <div className="container mx-auto px-4 md:px-6 max-w-lg text-center py-20">
-          <CheckCircle2 className="w-20 h-20 mx-auto text-green-800 mb-6" />
-          <h1 className="text-3xl font-display font-bold tracking-tighter mb-4">Order Confirmed!</h1>
-          <p className="text-muted-foreground mb-2">
-            Thank you for shopping with ACCENZA. Your order has been placed successfully.
-          </p>
-          {placedOrderNumber && (
-            <p className="text-sm font-mono text-muted-foreground mb-2" data-testid="text-order-number">
-              Order: {placedOrderNumber}
-            </p>
-          )}
-          <p className="text-sm text-muted-foreground mb-8">
-            You will receive an order confirmation on your registered email/phone shortly.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link href="/orders" data-testid="link-view-orders" className="inline-block border border-foreground px-8 py-3.5 text-xs uppercase tracking-widest font-semibold hover:bg-foreground hover:text-background transition-colors">
-              View My Orders
-            </Link>
-            <Link href="/" data-testid="link-back-home" className="inline-block bg-foreground text-background px-8 py-3.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90">
-              Continue Shopping
-            </Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isLoggedIn) {
-    return (
-      <div className="min-h-screen bg-background pt-28 pb-20">
-        <div className="container mx-auto px-4 md:px-6 max-w-lg text-center py-20">
-          <h1 className="text-2xl font-display font-bold tracking-tighter mb-4">Sign in to continue</h1>
-          <p className="text-muted-foreground mb-8">You need to be signed in to place an order.</p>
-          <Link href="/login" className="inline-block bg-foreground text-background px-8 py-3.5 text-xs uppercase tracking-widest font-semibold">
-            Sign In
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const validateShipping = () => {
-    if (!shipping.name || !shipping.phone || !shipping.address || !shipping.city || !shipping.state || !shipping.pincode) {
-      toast({ title: "Please fill in all shipping details", variant: "destructive" });
-      return false;
-    }
-    if (!/^[6-9]\d{9}$/.test(shipping.phone)) {
-      toast({ title: "Please enter a valid 10-digit mobile number", variant: "destructive" });
-      return false;
-    }
-    if (!/^\d{6}$/.test(shipping.pincode)) {
-      toast({ title: "Please enter a valid 6-digit pincode", variant: "destructive" });
-      return false;
-    }
-    if (pincodeStatus && !pincodeStatus.serviceable) {
-      toast({ title: "We don't deliver to this pincode yet", description: "Please try a different delivery address.", variant: "destructive" });
-      return false;
-    }
-    return true;
-  };
-
   const handlePlaceOrder = useCallback(async () => {
     setIsProcessingPayment(true);
     try {
@@ -346,6 +258,94 @@ export default function CheckoutPage() {
       toast({ title: "Could not initiate payment", description: err.message || "Please try again.", variant: "destructive" });
     }
   }, [items, shipping, appliedPromo, user, loadRazorpayScript, verifyAndConfirm, toast]);
+
+  useEffect(() => { setMounted(true); }, []);
+
+  if (!mounted) {
+    return (
+      <div className="min-h-screen bg-background pt-28 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (items.length === 0 && !orderPlaced) {
+    return (
+      <div className="min-h-screen bg-background pt-28 pb-20">
+        <div className="container mx-auto px-4 md:px-6 max-w-2xl text-center py-20">
+          <p className="text-xl font-medium mb-4">Your bag is empty</p>
+          <p className="text-muted-foreground mb-8">Add some items before checking out.</p>
+          <Link href="/" data-testid="link-continue-shopping" className="inline-block border border-foreground px-8 py-3.5 text-xs uppercase tracking-widest font-semibold">
+            Continue Shopping
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (orderPlaced) {
+    return (
+      <div className="min-h-screen bg-background pt-28 pb-20">
+        <div className="container mx-auto px-4 md:px-6 max-w-lg text-center py-20">
+          <CheckCircle2 className="w-20 h-20 mx-auto text-green-800 mb-6" />
+          <h1 className="text-3xl font-display font-bold tracking-tighter mb-4">Order Confirmed!</h1>
+          <p className="text-muted-foreground mb-2">
+            Thank you for shopping with ACCENZA. Your order has been placed successfully.
+          </p>
+          {placedOrderNumber && (
+            <p className="text-sm font-mono text-muted-foreground mb-2" data-testid="text-order-number">
+              Order: {placedOrderNumber}
+            </p>
+          )}
+          <p className="text-sm text-muted-foreground mb-8">
+            You will receive an order confirmation on your registered email/phone shortly.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link href="/orders" data-testid="link-view-orders" className="inline-block border border-foreground px-8 py-3.5 text-xs uppercase tracking-widest font-semibold hover:bg-foreground hover:text-background transition-colors">
+              View My Orders
+            </Link>
+            <Link href="/" data-testid="link-back-home" className="inline-block bg-foreground text-background px-8 py-3.5 text-xs uppercase tracking-widest font-semibold hover:opacity-90">
+              Continue Shopping
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-background pt-28 pb-20">
+        <div className="container mx-auto px-4 md:px-6 max-w-lg text-center py-20">
+          <h1 className="text-2xl font-display font-bold tracking-tighter mb-4">Sign in to continue</h1>
+          <p className="text-muted-foreground mb-8">You need to be signed in to place an order.</p>
+          <Link href="/login" className="inline-block bg-foreground text-background px-8 py-3.5 text-xs uppercase tracking-widest font-semibold">
+            Sign In
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const validateShipping = () => {
+    if (!shipping.name || !shipping.phone || !shipping.address || !shipping.city || !shipping.state || !shipping.pincode) {
+      toast({ title: "Please fill in all shipping details", variant: "destructive" });
+      return false;
+    }
+    if (!/^[6-9]\d{9}$/.test(shipping.phone)) {
+      toast({ title: "Please enter a valid 10-digit mobile number", variant: "destructive" });
+      return false;
+    }
+    if (!/^\d{6}$/.test(shipping.pincode)) {
+      toast({ title: "Please enter a valid 6-digit pincode", variant: "destructive" });
+      return false;
+    }
+    if (pincodeStatus && !pincodeStatus.serviceable) {
+      toast({ title: "We don't deliver to this pincode yet", description: "Please try a different delivery address.", variant: "destructive" });
+      return false;
+    }
+    return true;
+  };
 
   return (
     <div className="min-h-screen bg-background pt-28 pb-20">
